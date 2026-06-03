@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  # 1. Banco de Dados Relacional (PostgreSQL)
+  postgres:
+    image: postgres:15-alpine
+    container_name: snooker-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-snooker_db}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-snooker_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. Object Storage (MinIO)
+  minio:
+    image: minio/minio:RELEASE.2023-09-04T19-57-37Z
+    container_name: snooker-minio
+    restart: always
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000" # API
+      - "9001:9001" # Web Console
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 3. Message Broker (NATS.io)
+  nats:
+    image: nats:2.10-alpine
+    container_name: snooker-nats
+    restart: always
+    ports:
+      - "4222:4222" # Clientes
+      - "8222:8222" # HTTP Monitor
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "4222"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 4. Core API (Nosso backend em Go)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: snooker-api
+    restart: always
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    environment:
+      - PORT=${PORT:-8080}
+      - JWT_SECRET=${JWT_SECRET:-substitua_por_uma_chave_secreta_longa_e_segura}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      # Conexões internas na rede do Docker (usam os nomes dos serviços como hosts)
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-postgres}
+      - DB_NAME=${DB_NAME:-snooker_db}
+      - STORAGE_ENDPOINT=minio:9000
+      - STORAGE_ACCESS_KEY=${STORAGE_ACCESS_KEY:-minioadmin}
+      - STORAGE_SECRET_KEY=${STORAGE_SECRET_KEY:-minioadmin}
+      - STORAGE_USE_SSL=false
+      - STORAGE_BUCKET_NAME=${STORAGE_BUCKET_NAME:-snooker-profiles}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  minio_data:

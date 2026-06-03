@@ -1,0 +1,35 @@
+# Variáveis de Ambiente e Segredos
+.env
+
+# Binários e Executáveis do Go
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+snooker-api
+
+# Arquivos de Cobertura de Testes
+*.out
+*.cover
+coverage.html
+
+# IDEs e Ferramentas Locais
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Pasta temporária do sistema
+/tmp/
+
+# Agentes e Ferramentas Locais
+.agents/
+skills-lock.json
+coverage
+
