@@ -70,7 +70,7 @@ O módulo de autenticação só será aprovado e integrado à branch principal (
 2.  **Meta de Cobertura de Código:** A cobertura de código do pacote de autenticação e controllers associados deve ser de **no mínimo 85%**.
     *   *Comando de Validação:*
         ```bash
-        go test -coverprofile=coverage.out ./internal/auth/... ./internal/profile/...
+        go test -coverprofile=coverage.out ./auth/...
         go tool cover -func=coverage.out
         ```
 3.  **Execução em Pipelines de CI/CD:** Os testes de integração reais (Postgres e MinIO via testcontainers/compose) devem passar de forma automática em todas as esteiras antes do Merge Request ser liberado para revisão por pares.

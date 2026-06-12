@@ -1,91 +1,71 @@
-version: '3.8'
-
 services:
-  # 1. Banco de Dados Relacional (PostgreSQL)
-  postgres:
+  auth-postgres:
     image: postgres:15-alpine
-    container_name: snooker-postgres
+    container_name: snooker-auth-postgres
     restart: always
     environment:
-      POSTGRES_DB: ${DB_NAME:-snooker_db}
-      POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${AUTH_DB_NAME:-snooker_auth}
+      POSTGRES_USER: ${AUTH_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:-postgres}
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "${AUTH_DB_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - auth_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-snooker_db}"]
+      test: ["CMD-SHELL", "pg_isready -U ${AUTH_DB_USER:-postgres} -d ${AUTH_DB_NAME:-snooker_auth}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # 2. Object Storage (MinIO)
-  minio:
-    image: minio/minio:RELEASE.2023-09-04T19-57-37Z
-    container_name: snooker-minio
+  auth:
+    image: golang:1.25-alpine
+    container_name: snooker-auth
     restart: always
-    environment:
-      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:-minioadmin}
-    ports:
-      - "9000:9000" # API
-      - "9001:9001" # Web Console
     volumes:
-      - minio_data:/data
-    command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  # 3. Message Broker (NATS.io)
-  nats:
-    image: nats:2.10-alpine
-    container_name: snooker-nats
-    restart: always
+      - .:/app
+    working_dir: /app
     ports:
-      - "4222:4222" # Clientes
-      - "8222:8222" # HTTP Monitor
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "4222"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  # 4. Core API (Nosso backend em Go)
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: snooker-api
-    restart: always
-    ports:
-      - "${PORT:-8080}:${PORT:-8080}"
+      - "${AUTH_PORT:-8081}:8080"
     environment:
-      - PORT=${PORT:-8080}
-      - JWT_SECRET=${JWT_SECRET:-substitua_por_uma_chave_secreta_longa_e_segura}
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-      # Conexões internas na rede do Docker (usam os nomes dos serviços como hosts)
-      - DB_HOST=postgres
+      - PORT=8080
+      - ALLOWED_ORIGINS=${AUTH_ALLOWED_ORIGINS:-http://localhost:3000}
+      - COOKIE_SECURE=${AUTH_COOKIE_SECURE:-false}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID is required}
+      - DB_HOST=auth-postgres
       - DB_PORT=5432
-      - DB_USER=${DB_USER:-postgres}
-      - DB_PASSWORD=${DB_PASSWORD:-postgres}
-      - DB_NAME=${DB_NAME:-snooker_db}
-      - STORAGE_ENDPOINT=minio:9000
-      - STORAGE_ACCESS_KEY=${STORAGE_ACCESS_KEY:-minioadmin}
-      - STORAGE_SECRET_KEY=${STORAGE_SECRET_KEY:-minioadmin}
-      - STORAGE_USE_SSL=false
-      - STORAGE_BUCKET_NAME=${STORAGE_BUCKET_NAME:-snooker-profiles}
+      - DB_USER=${AUTH_DB_USER:-postgres}
+      - DB_PASSWORD=${AUTH_DB_PASSWORD:-postgres}
+      - DB_NAME=${AUTH_DB_NAME:-snooker_auth}
+      - DB_SSLMODE=disable
     depends_on:
-      postgres:
+      auth-postgres:
         condition: service_healthy
-      minio:
-        condition: service_healthy
-      nats:
+    command: go run auth/cmd/auth/main.go
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    image: node:24-alpine
+    container_name: snooker-frontend
+    restart: always
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    working_dir: /app
+    environment:
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID is required}
+      - AUTH_API_ORIGIN=http://auth:8080
+    command: sh -c "npm ci && npm run dev"
+    depends_on:
+      auth:
         condition: service_healthy
 
 volumes:
-  postgres_data:
-  minio_data:
+  auth_postgres_data:
+
