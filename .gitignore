@@ -27,6 +27,7 @@ coverage.html
 
 # Pasta temporária do sistema
 /tmp/
+.tmp/
 
 # Agentes e Ferramentas Locais
 .agents/
@@ -37,3 +38,4 @@ coverage
 node_modules/
 frontend/node_modules/
 frontend/dist/
+*.tsbuildinfo

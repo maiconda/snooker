@@ -9,6 +9,7 @@ import { Link, navigate } from "../lib/router";
 
 export function LoginPage() {
   const auth = useAuth();
+  const { loginWithGoogleToken } = auth;
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -24,14 +25,13 @@ export function LoginPage() {
     }
 
     setSubmitting(true);
-    auth
-      .loginWithGoogleToken(callback.idToken)
+    loginWithGoogleToken(callback.idToken)
       .then(() => navigate("/"))
       .catch((error: unknown) => {
         setLocalError(error instanceof Error ? error.message : "Falha ao entrar com Google.");
       })
       .finally(() => setSubmitting(false));
-  }, [auth]);
+  }, [loginWithGoogleToken]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

@@ -1,6 +1,6 @@
 import { AuthApiError, type ApiErrorBody, type AuthResponse, type LoginPayload, type RefreshResponse, type SignupPayload } from "./types";
 
-const API_PREFIX = "/api/v1/auth";
+const API_PREFIX = resolveAuthApiPrefix(__AUTH_API_ORIGIN__);
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_PREFIX}${path}`, {
@@ -18,6 +18,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       body = (await response.json()) as ApiErrorBody;
     } catch {
       body = {};
+    }
+
+    if (response.status === 429) {
+      throw new AuthApiError(
+        body.error?.message ?? "Muitas tentativas. Por favor, aguarde um minuto e tente novamente.",
+        body.error?.code ?? "TOO_MANY_REQUESTS",
+        response.status,
+        body.error?.details ?? []
+      );
     }
 
     throw new AuthApiError(
@@ -65,4 +74,22 @@ export function logout(accessToken: string): Promise<{ message: string }> {
       Authorization: `Bearer ${accessToken}`
     }
   });
+}
+
+function resolveAuthApiPrefix(configuredOrigin: string): string {
+  const origin = configuredOrigin.trim().replace(/\/+$/, "");
+
+  if (!origin || origin === "/") {
+    return "/api/v1/auth";
+  }
+
+  if (origin.endsWith("/api/v1/auth")) {
+    return origin;
+  }
+
+  if (origin.endsWith("/api")) {
+    return `${origin}/v1/auth`;
+  }
+
+  return `${origin}/api/v1/auth`;
 }

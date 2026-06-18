@@ -66,6 +66,18 @@ services:
       auth:
         condition: service_healthy
 
+  game-core:
+    image: node:24-alpine
+    container_name: snooker-game-core
+    restart: always
+    ports:
+      - "${GAME_CORE_PORT:-3001}:3001"
+    volumes:
+      - ./game-core:/app
+      - /app/node_modules
+    working_dir: /app
+    command: sh -c "npm ci && npx vite --host 0.0.0.0 --port 3001"
+
 volumes:
   auth_postgres_data:
 

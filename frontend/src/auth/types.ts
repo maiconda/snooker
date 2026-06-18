@@ -9,6 +9,7 @@ export type AuthSession = {
   accessToken: string;
   status: AccountStatus;
   email?: string;
+  expiresAt?: number;
 };
 
 export type LoginPayload = {

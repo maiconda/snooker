@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore, type AnchorHTMLAttributes, type ReactNode } from "react";
+import { useSyncExternalStore, type AnchorHTMLAttributes, type ReactNode } from "react";
 
 const listeners = new Set<() => void>();
 
@@ -27,30 +27,6 @@ export function usePathname() {
     () => window.location.pathname,
     () => "/"
   );
-}
-
-export function RouterEvents() {
-  useEffect(() => {
-    const originalPushState = window.history.pushState;
-    const originalReplaceState = window.history.replaceState;
-
-    window.history.pushState = function pushState(...args) {
-      originalPushState.apply(this, args);
-      notify();
-    };
-
-    window.history.replaceState = function replaceState(...args) {
-      originalReplaceState.apply(this, args);
-      notify();
-    };
-
-    return () => {
-      window.history.pushState = originalPushState;
-      window.history.replaceState = originalReplaceState;
-    };
-  }, []);
-
-  return null;
 }
 
 type LinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & {

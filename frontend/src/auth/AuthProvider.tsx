@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, type ReactNode } from "react";
 import * as authApi from "./authApi";
 import { sessionFromAccessToken } from "./token";
-import type { AuthSession, LoginPayload, SignupPayload } from "./types";
+import type { AuthResponse, AuthSession, LoginPayload, SignupPayload } from "./types";
 
 type AuthState =
   | { phase: "checking"; session: null; error: string | null }
@@ -31,12 +31,22 @@ const initialState: AuthState = {
   error: null
 };
 
+let initialBootstrapPromise: Promise<AuthSession | null> | null = null;
+
 function reducer(state: AuthState, action: AuthAction): AuthState {
   switch (action.type) {
     case "BOOTSTRAP_AUTHENTICATED":
-    case "AUTHENTICATED":
+      if (state.phase !== "checking") {
+        return state;
+      }
       return { phase: "authenticated", session: action.session, error: null };
     case "BOOTSTRAP_ANONYMOUS":
+      if (state.phase !== "checking") {
+        return state;
+      }
+      return { phase: "anonymous", session: null, error: null };
+    case "AUTHENTICATED":
+      return { phase: "authenticated", session: action.session, error: null };
     case "ANONYMOUS":
       return { phase: "anonymous", session: null, error: null };
     case "ERROR":
@@ -46,6 +56,24 @@ function reducer(state: AuthState, action: AuthAction): AuthState {
   }
 }
 
+function sessionFromAuthResponse(response: AuthResponse): AuthSession {
+  return {
+    ...sessionFromAccessToken(response.token),
+    status: response.status
+  };
+}
+
+function loadInitialSession(): Promise<AuthSession | null> {
+  if (!initialBootstrapPromise) {
+    initialBootstrapPromise = authApi
+      .refresh()
+      .then((response) => sessionFromAccessToken(response.access_token))
+      .catch(() => null);
+  }
+
+  return initialBootstrapPromise;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
 
@@ -53,17 +81,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const response = await authApi.refresh();
       dispatch({
-        type: "BOOTSTRAP_AUTHENTICATED",
+        type: "AUTHENTICATED",
         session: sessionFromAccessToken(response.access_token)
       });
     } catch {
-      dispatch({ type: "BOOTSTRAP_ANONYMOUS" });
+      dispatch({ type: "ANONYMOUS" });
     }
   }, []);
 
   useEffect(() => {
-    void refreshSession();
-  }, [refreshSession]);
+    let active = true;
+
+    loadInitialSession().then((session) => {
+      if (!active) {
+        return;
+      }
+
+      if (session) {
+        dispatch({ type: "BOOTSTRAP_AUTHENTICATED", session });
+      } else {
+        dispatch({ type: "BOOTSTRAP_ANONYMOUS" });
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (state.phase !== "authenticated" || !state.session?.expiresAt) {
+      return;
+    }
+
+    const expiresAt = state.session.expiresAt;
+    const now = Date.now();
+    const delay = expiresAt - now - 60000;
+    const timeoutDelay = Math.max(0, delay);
+
+    const timer = setTimeout(() => {
+      refreshSession();
+    }, timeoutDelay);
+
+    return () => clearTimeout(timer);
+  }, [state.phase, state.session, refreshSession]);
 
   const login = useCallback(async (payload: LoginPayload) => {
     dispatch({ type: "ERROR", error: null });
@@ -71,10 +132,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const response = await authApi.login(payload);
       dispatch({
         type: "AUTHENTICATED",
-        session: {
-          accessToken: response.token,
-          status: response.status
-        }
+        session: sessionFromAuthResponse(response)
       });
     } catch (error) {
       dispatch({ type: "ERROR", error: error instanceof Error ? error.message : "Falha ao entrar." });
@@ -88,10 +146,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const response = await authApi.signup(payload);
       dispatch({
         type: "AUTHENTICATED",
-        session: {
-          accessToken: response.token,
-          status: response.status
-        }
+        session: sessionFromAuthResponse(response)
       });
     } catch (error) {
       dispatch({ type: "ERROR", error: error instanceof Error ? error.message : "Falha ao cadastrar." });
@@ -105,10 +160,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const response = await authApi.loginWithGoogle(idToken);
       dispatch({
         type: "AUTHENTICATED",
-        session: {
-          accessToken: response.token,
-          status: response.status
-        }
+        session: sessionFromAuthResponse(response)
       });
     } catch (error) {
       dispatch({ type: "ERROR", error: error instanceof Error ? error.message : "Falha ao entrar com Google." });

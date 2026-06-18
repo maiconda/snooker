@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0 --port 3000",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 3000",
-    "typecheck": "tsc -b"
+    "dev": "vite --configLoader runner --host 0.0.0.0 --port 3000",
+    "build": "tsc --noEmit && vite build --configLoader runner",
+    "preview": "vite preview --configLoader runner --host 0.0.0.0 --port 3000",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "react": "^19.0.0",
