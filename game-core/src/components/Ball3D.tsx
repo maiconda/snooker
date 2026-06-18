@@ -24,21 +24,14 @@ export function Ball3D({ ball }: Ball3DProps) {
       meshRef.current.visible = true;
     }
 
-    // Accumulate rolling rotation
-    const vx = ball.vx;
-    const vy = ball.vy;
-    const speed = Math.sqrt(vx * vx + vy * vy);
+    // Accumulate physical spin from the engine.
+    const angularSpeed = Math.sqrt(ball.spinX * ball.spinX + ball.spinY * ball.spinY);
 
-    if (speed > 0.002) {
-      const angularSpeed = speed / ball.radius;
+    if (angularSpeed > 0.08) {
       // Cap delta to prevent crazy rotations on frame drops
       const cappedDelta = Math.min(delta, 0.03);
       const angleChange = angularSpeed * cappedDelta;
-
-      // Axis of rotation = direction X UP. 
-      // Dir = [vx, 0, vy], UP = [0, 1, 0]
-      // Dir X UP = [vy, 0, -vx]
-      const axis = new THREE.Vector3(vy, 0, -vx).normalize();
+      const axis = new THREE.Vector3(ball.spinX, 0, ball.spinY).normalize();
       meshRef.current.rotateOnWorldAxis(axis, angleChange);
     }
   });

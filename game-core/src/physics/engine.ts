@@ -4,6 +4,8 @@ export type Ball = {
   y: number;
   vx: number;
   vy: number;
+  spinX: number;
+  spinY: number;
   radius: number;
   isWhite: boolean;
   sunk: boolean;
@@ -14,8 +16,18 @@ export const TABLE_WIDTH = 2.0;
 export const TABLE_HEIGHT = 1.0;
 export const BALL_RADIUS = 0.035;
 export const POCKET_RADIUS = 0.055;
-export const FRICTION = 0.985; // applied per frame (~60fps)
-export const RESTITUTION = 0.85; // bounce elasticity
+export const RESTITUTION = 0.96; // phenolic resin ball-to-ball elasticity
+
+const GRAVITY = 9.81;
+const SLIDING_FRICTION = 0.18;
+const ROLLING_FRICTION = 0.035;
+const CUSHION_RESTITUTION_MIN = 0.72;
+const CUSHION_RESTITUTION_MAX = 0.84;
+const CUSHION_TANGENT_DAMPING_MIN = 0.76;
+const CUSHION_TANGENT_DAMPING_MAX = 0.9;
+const STOP_SPEED = 0.003;
+const STOP_SPIN = 0.08;
+const SLIP_TO_ROLLING_THRESHOLD = 0.018;
 
 export const POCKETS = [
   { x: -1.0, y: 0.5 },
@@ -36,6 +48,8 @@ export function initBalls(): Ball[] {
     y: 0,
     vx: 0,
     vy: 0,
+    spinX: 0,
+    spinY: 0,
     radius: BALL_RADIUS,
     isWhite: true,
     sunk: false,
@@ -66,6 +80,8 @@ export function initBalls(): Ball[] {
         y,
         vx: 0,
         vy: 0,
+        spinX: 0,
+        spinY: 0,
         radius: BALL_RADIUS,
         isWhite: false,
         sunk: false,
@@ -78,6 +94,99 @@ export function initBalls(): Ball[] {
   return list;
 }
 
+function stopBall(ball: Ball): void {
+  ball.vx = 0;
+  ball.vy = 0;
+  ball.spinX = 0;
+  ball.spinY = 0;
+}
+
+function clampMagnitude(value: number, maxDelta: number): number {
+  if (Math.abs(value) <= maxDelta) return 0;
+  return value - Math.sign(value) * maxDelta;
+}
+
+function applyFeltFriction(ball: Ball, dt: number): void {
+  const speed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+  const slipX = ball.vx + ball.spinY * ball.radius;
+  const slipY = ball.vy - ball.spinX * ball.radius;
+  const slipSpeed = Math.sqrt(slipX * slipX + slipY * slipY);
+
+  if (speed < STOP_SPEED && slipSpeed < SLIP_TO_ROLLING_THRESHOLD) {
+    stopBall(ball);
+    return;
+  }
+
+  if (slipSpeed > SLIP_TO_ROLLING_THRESHOLD) {
+    const deceleration = SLIDING_FRICTION * GRAVITY;
+    const speedDelta = deceleration * dt;
+    const fx = -(slipX / slipSpeed) * speedDelta;
+    const fy = -(slipY / slipSpeed) * speedDelta;
+
+    ball.vx += fx;
+    ball.vy += fy;
+
+    const angularScale = 2.5 / ball.radius;
+    ball.spinX += -fy * angularScale;
+    ball.spinY += fx * angularScale;
+    return;
+  }
+
+  if (speed > 0) {
+    const speedDelta = ROLLING_FRICTION * GRAVITY * dt;
+    const nextSpeed = Math.max(0, speed - speedDelta);
+    const scale = nextSpeed / speed;
+
+    ball.vx *= scale;
+    ball.vy *= scale;
+
+    if (nextSpeed === 0) {
+      stopBall(ball);
+      return;
+    }
+  }
+
+  // Keep pure rolling locked to the translational velocity once sliding ends.
+  ball.spinX = ball.vy / ball.radius;
+  ball.spinY = -ball.vx / ball.radius;
+
+  if (
+    Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy) < STOP_SPEED &&
+    Math.sqrt(ball.spinX * ball.spinX + ball.spinY * ball.spinY) < STOP_SPIN
+  ) {
+    stopBall(ball);
+  }
+}
+
+function resolveCushionCollision(ball: Ball, normalX: number, normalY: number): void {
+  const normalVelocity = ball.vx * normalX + ball.vy * normalY;
+  if (normalVelocity >= 0) return;
+
+  const tangentX = -normalY;
+  const tangentY = normalX;
+  const tangentVelocity = ball.vx * tangentX + ball.vy * tangentY;
+  const speed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+  const directness = speed > 0 ? Math.abs(normalVelocity) / speed : 1;
+  const normalRestitution =
+    CUSHION_RESTITUTION_MIN +
+    (CUSHION_RESTITUTION_MAX - CUSHION_RESTITUTION_MIN) * directness;
+  const tangentDamping =
+    CUSHION_TANGENT_DAMPING_MIN +
+    (CUSHION_TANGENT_DAMPING_MAX - CUSHION_TANGENT_DAMPING_MIN) * directness;
+
+  const bouncedNormalVelocity = -normalVelocity * normalRestitution;
+  const dampedTangentVelocity = tangentVelocity * tangentDamping;
+
+  ball.vx = normalX * bouncedNormalVelocity + tangentX * dampedTangentVelocity;
+  ball.vy = normalY * bouncedNormalVelocity + tangentY * dampedTangentVelocity;
+
+  const tangentLoss = tangentVelocity - dampedTangentVelocity;
+  ball.spinX += (tangentY * tangentLoss * 1.8) / ball.radius;
+  ball.spinY += (-tangentX * tangentLoss * 1.8) / ball.radius;
+  ball.spinX *= 0.92;
+  ball.spinY *= 0.92;
+}
+
 export function stepSimulation(balls: Ball[], dt: number): void {
   // 1. Update positions and check pockets
   for (const ball of balls) {
@@ -86,13 +195,7 @@ export function stepSimulation(balls: Ball[], dt: number): void {
     ball.x += ball.vx * dt;
     ball.y += ball.vy * dt;
 
-    // Apply friction/deceleration
-    ball.vx *= FRICTION;
-    ball.vy *= FRICTION;
-
-    // Stop completely if very slow
-    if (Math.abs(ball.vx) < 0.002) ball.vx = 0;
-    if (Math.abs(ball.vy) < 0.002) ball.vy = 0;
+    applyFeltFriction(ball, dt);
 
     // Check if ball falls into a pocket
     for (const pocket of POCKETS) {
@@ -101,8 +204,7 @@ export function stepSimulation(balls: Ball[], dt: number): void {
       const distSq = dx * dx + dy * dy;
       if (distSq < POCKET_RADIUS * POCKET_RADIUS) {
         ball.sunk = true;
-        ball.vx = 0;
-        ball.vy = 0;
+        stopBall(ball);
         break;
       }
     }
@@ -119,18 +221,18 @@ export function stepSimulation(balls: Ball[], dt: number): void {
 
     if (ball.x < minX) {
       ball.x = minX;
-      ball.vx = -ball.vx * RESTITUTION;
+      resolveCushionCollision(ball, 1, 0);
     } else if (ball.x > maxX) {
       ball.x = maxX;
-      ball.vx = -ball.vx * RESTITUTION;
+      resolveCushionCollision(ball, -1, 0);
     }
 
     if (ball.y < minY) {
       ball.y = minY;
-      ball.vy = -ball.vy * RESTITUTION;
+      resolveCushionCollision(ball, 0, 1);
     } else if (ball.y > maxY) {
       ball.y = maxY;
-      ball.vy = -ball.vy * RESTITUTION;
+      resolveCushionCollision(ball, 0, -1);
     }
   }
 
@@ -151,24 +253,42 @@ export function stepSimulation(balls: Ball[], dt: number): void {
       if (dist < minDist) {
         // Resolve overlap
         const overlap = minDist - dist;
-        const nx = dx / dist;
-        const ny = dy / dist;
+        const nx = dist > 0 ? dx / dist : 1;
+        const ny = dist > 0 ? dy / dist : 0;
 
         ballA.x -= nx * overlap * 0.5;
         ballA.y -= ny * overlap * 0.5;
         ballB.x += nx * overlap * 0.5;
         ballB.y += ny * overlap * 0.5;
 
-        // Elastic collision math
-        const kx = ballA.vx - ballB.vx;
-        const ky = ballA.vy - ballB.vy;
-        const p = nx * kx + ny * ky;
+        const rvx = ballB.vx - ballA.vx;
+        const rvy = ballB.vy - ballA.vy;
+        const velocityAlongNormal = rvx * nx + rvy * ny;
 
-        if (p > 0) { // they are moving towards each other
-          ballA.vx -= p * nx;
-          ballA.vy -= p * ny;
-          ballB.vx += p * nx;
-          ballB.vy += p * ny;
+        if (velocityAlongNormal < 0) {
+          const impulse = (-(1 + RESTITUTION) * velocityAlongNormal) / 2;
+          const impulseX = impulse * nx;
+          const impulseY = impulse * ny;
+
+          ballA.vx -= impulseX;
+          ballA.vy -= impulseY;
+          ballB.vx += impulseX;
+          ballB.vy += impulseY;
+
+          const tangentX = -ny;
+          const tangentY = nx;
+          const tangentVelocity = rvx * tangentX + rvy * tangentY;
+          const tangentImpulse = clampMagnitude(tangentVelocity * 0.04, impulse * 0.12);
+
+          ballA.vx += tangentImpulse * tangentX;
+          ballA.vy += tangentImpulse * tangentY;
+          ballB.vx -= tangentImpulse * tangentX;
+          ballB.vy -= tangentImpulse * tangentY;
+
+          ballA.spinX += (tangentY * tangentImpulse) / ballA.radius;
+          ballA.spinY += (-tangentX * tangentImpulse) / ballA.radius;
+          ballB.spinX -= (tangentY * tangentImpulse) / ballB.radius;
+          ballB.spinY -= (-tangentX * tangentImpulse) / ballB.radius;
         }
       }
     }
@@ -177,7 +297,10 @@ export function stepSimulation(balls: Ball[], dt: number): void {
 
 export function isStatic(balls: Ball[]): boolean {
   for (const ball of balls) {
-    if (!ball.sunk && (ball.vx !== 0 || ball.vy !== 0)) {
+    if (
+      !ball.sunk &&
+      (ball.vx !== 0 || ball.vy !== 0 || ball.spinX !== 0 || ball.spinY !== 0)
+    ) {
       return false;
     }
   }
