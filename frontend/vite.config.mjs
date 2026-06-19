@@ -26,6 +26,7 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 3000,
+      allowedHosts: ["snooker.maiconda.com"],
       proxy: {
         "/api/v1/rooms": {
           target: lobbyProxyTarget,
