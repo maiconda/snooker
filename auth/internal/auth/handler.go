@@ -10,9 +10,10 @@ import (
 )
 
 type Handler struct {
-	authService  *AuthService
-	tokenService *TokenService
-	cookieSecure bool
+	authService    *AuthService
+	tokenService   *TokenService
+	cookieSecure   bool
+	internalAPIKey string
 }
 
 type HandlerOption func(*Handler)
@@ -20,6 +21,12 @@ type HandlerOption func(*Handler)
 func WithSecureRefreshCookie(secure bool) HandlerOption {
 	return func(h *Handler) {
 		h.cookieSecure = secure
+	}
+}
+
+func WithInternalAPIKey(key string) HandlerOption {
+	return func(h *Handler) {
+		h.internalAPIKey = key
 	}
 }
 
@@ -174,6 +181,55 @@ func (h *Handler) Logout(c *gin.Context) {
 	h.clearRefreshTokenCookie(c)
 	c.JSON(http.StatusOK, httpx.MessageResponse{
 		Message: "Sessao encerrada com sucesso",
+	})
+}
+
+func (h *Handler) ActivateUser(c *gin.Context) {
+	if h.internalAPIKey == "" || c.GetHeader("X-Internal-API-Key") != h.internalAPIKey {
+		c.JSON(http.StatusUnauthorized, httpx.ErrorResponse{
+			Error: httpx.ErrorDetail{
+				Code:    httpx.ErrCodeUnauthorized,
+				Message: "Internal API key is invalid",
+			},
+		})
+		return
+	}
+
+	userID, err := uuid.Parse(c.Param("user_id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, httpx.ErrorResponse{
+			Error: httpx.ErrorDetail{
+				Code:    httpx.ErrCodeValidationFailed,
+				Message: "Invalid user_id",
+			},
+		})
+		return
+	}
+
+	if err := h.authService.ActivateUser(c.Request.Context(), userID); err != nil {
+		c.JSON(http.StatusInternalServerError, httpx.ErrorResponse{
+			Error: httpx.ErrorDetail{
+				Code:    httpx.ErrCodeInternal,
+				Message: "Failed to activate user",
+			},
+		})
+		return
+	}
+
+	accessToken, err := h.authService.IssueAccessTokenForUser(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, httpx.ErrorResponse{
+			Error: httpx.ErrorDetail{
+				Code:    httpx.ErrCodeInternal,
+				Message: "Failed to generate access token",
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, ActivateUserResponse{
+		AccessToken: accessToken,
+		Status:      StatusActive,
 	})
 }
 

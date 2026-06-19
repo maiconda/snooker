@@ -2,7 +2,9 @@ import { useEffect } from "react";
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import { HomePage } from "./pages/HomePage";
 import { LoginPage } from "./pages/LoginPage";
+import { ProfilePage } from "./pages/ProfilePage";
 import { SignupPage } from "./pages/SignupPage";
+import { LobbyRoomPage } from "./pages/LobbyRoomPage";
 import { usePathname, navigate } from "./lib/router";
 import { Button } from "./components/Button";
 
@@ -39,7 +41,9 @@ function Routes() {
     }
 
     if (auth.phase === "authenticated") {
-      if (path !== "/") {
+      if (auth.session?.status === "onboarding_pending" && path !== "/perfil") {
+        navigate("/perfil");
+      } else if (auth.session?.status !== "onboarding_pending" && path !== "/" && path !== "/perfil" && !path.startsWith("/sala/")) {
         navigate("/");
       }
     } else if (auth.phase === "anonymous") {
@@ -58,8 +62,17 @@ function Routes() {
       return <BlockedPage />;
     }
 
+    if (path === "/perfil") {
+      return <ProfilePage />;
+    }
+
     if (path === "/") {
       return <HomePage />;
+    }
+
+    if (path.startsWith("/sala/")) {
+      const roomId = path.substring(6);
+      return <LobbyRoomPage roomId={roomId} />;
     }
     return <main className="min-h-screen bg-white" />;
   }

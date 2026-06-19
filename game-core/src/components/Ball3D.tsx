@@ -13,7 +13,7 @@ const BALL_RADIUS = 0.035;
 
 // Shared static geometries instantiated once to save memory and CPU overhead
 const cylinderGeom = new CylinderGeometry(BALL_RADIUS, BALL_RADIUS, TOKEN_HEIGHT, 32);
-const boxGeom = new BoxGeometry(BALL_RADIUS * 1.08, 0.002, 0.004);
+const boxGeom = new BoxGeometry(BALL_RADIUS * 1.08, 0.0001, 0.004);
 const ringGeom1 = new RingGeometry(BALL_RADIUS * 0.72, BALL_RADIUS * 0.78, 32);
 const ringGeom2 = new RingGeometry(BALL_RADIUS * 0.96, BALL_RADIUS, 32);
 
@@ -58,15 +58,15 @@ export function Ball3D({ ball }: Ball3DProps) {
         <meshStandardMaterial color={tokenColor} roughness={0.94} metalness={0} />
       </mesh>
 
-      <mesh position={[0, TOKEN_HEIGHT / 2 + 0.0015, 0]} geometry={boxGeom}>
+      <mesh position={[0, TOKEN_HEIGHT / 2 + 0.0001, 0]} geometry={boxGeom}>
         <meshBasicMaterial color={markColor} />
       </mesh>
 
-      <mesh position={[0, TOKEN_HEIGHT / 2 + 0.002, 0]} rotation={[-Math.PI / 2, 0, 0]} geometry={ringGeom1}>
+      <mesh position={[0, TOKEN_HEIGHT / 2 + 0.0002, 0]} rotation={[-Math.PI / 2, 0, 0]} geometry={ringGeom1}>
         <meshBasicMaterial color={ringColor} />
       </mesh>
 
-      <mesh position={[0, TOKEN_HEIGHT / 2 + 0.0025, 0]} rotation={[-Math.PI / 2, 0, 0]} geometry={ringGeom2}>
+      <mesh position={[0, TOKEN_HEIGHT / 2 + 0.0003, 0]} rotation={[-Math.PI / 2, 0, 0]} geometry={ringGeom2}>
         <meshBasicMaterial color="#b9dff0" />
       </mesh>
     </group>

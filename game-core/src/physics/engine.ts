@@ -47,11 +47,6 @@ const RANDOM_POCKET_ATTEMPTS = 900;
 const RANDOM_POCKET_PLACEMENT_RADIUS = TABLE_RADIUS - POCKET_RADIUS * 1.7;
 const RANDOM_POCKET_MIN_DISTANCE = POCKET_RADIUS * 3.4;
 const RANDOM_POCKET_BALL_CLEARANCE = POCKET_RADIUS + BALL_RADIUS * 1.9;
-const CENTRAL_TARGET_COUNT = 8;
-const CENTRAL_FORMATION_RADIUS = BALL_RADIUS * 2.85;
-const OUTER_TARGET_MIN_RADIUS = 0.26;
-const OUTER_TARGET_MAX_RADIUS = TABLE_RADIUS - BALL_RADIUS * 3.6;
-const TARGET_PLACEMENT_CLEARANCE = BALL_RADIUS * 2.25;
 
 export const POCKETS: Pocket[] = [
   { x: TABLE_RADIUS * 0.55, y: 0 },
@@ -190,50 +185,21 @@ export function initBalls(): Ball[] {
     });
   };
 
-  for (let index = 0; index < CENTRAL_TARGET_COUNT; index++) {
-    const angle = (index / CENTRAL_TARGET_COUNT) * Math.PI * 2;
+  // Black ball (id 8, color #111111) exactly at the center
+  addTargetBall(8, 0, 0);
+
+  // Remaining 14 target balls arranged in a circle around the center
+  const outerIds = [1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15];
+  const CIRCLE_RADIUS = 0.16; // Minimum radius to prevent overlap: 0.1573
+
+  outerIds.forEach((id, index) => {
+    const angle = (index / outerIds.length) * Math.PI * 2;
     addTargetBall(
-      index + 1,
-      Math.cos(angle) * CENTRAL_FORMATION_RADIUS,
-      Math.sin(angle) * CENTRAL_FORMATION_RADIUS
+      id,
+      Math.cos(angle) * CIRCLE_RADIUS,
+      Math.sin(angle) * CIRCLE_RADIUS
     );
-  }
-
-  let ballId = CENTRAL_TARGET_COUNT + 1;
-  const placementClearanceSq = TARGET_PLACEMENT_CLEARANCE * TARGET_PLACEMENT_CLEARANCE;
-
-  while (ballId <= 15) {
-    let placed = false;
-
-    for (let attempt = 0; attempt < 300 && !placed; attempt++) {
-      const angle = Math.random() * Math.PI * 2;
-      const radius =
-        OUTER_TARGET_MIN_RADIUS +
-        Math.random() * (OUTER_TARGET_MAX_RADIUS - OUTER_TARGET_MIN_RADIUS);
-      const x = Math.cos(angle) * radius;
-      const y = Math.sin(angle) * radius;
-      const overlaps = list.some(
-        (ball) => distanceSq(x, y, ball.x, ball.y) < placementClearanceSq
-      );
-
-      if (!overlaps) {
-        addTargetBall(ballId, x, y);
-        placed = true;
-      }
-    }
-
-    if (!placed) {
-      const fallbackAngle = ((ballId - CENTRAL_TARGET_COUNT) / 8) * Math.PI * 2;
-      const fallbackRadius = OUTER_TARGET_MIN_RADIUS + BALL_RADIUS * 2.4;
-      addTargetBall(
-        ballId,
-        Math.cos(fallbackAngle) * fallbackRadius,
-        Math.sin(fallbackAngle) * fallbackRadius
-      );
-    }
-
-    ballId++;
-  }
+  });
 
   return list;
 }

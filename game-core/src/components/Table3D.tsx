@@ -431,6 +431,8 @@ export function Table3D({
       wallRef.current!.setMatrixAt(index, tempObject.matrix);
     });
     wallRef.current.instanceMatrix.needsUpdate = true;
+    wallRef.current.computeBoundingBox();
+    wallRef.current.computeBoundingSphere();
   }, []);
 
   useFrame(() => {
@@ -524,6 +526,7 @@ export function Table3D({
       <instancedMesh
         ref={wallRef}
         args={[undefined, undefined, TABLE_WALL_SEGMENTS]}
+        frustumCulled={false}
       >
         <boxGeometry
           args={[WALL_TANGENT_LENGTH, TABLE_WALL_HEIGHT, TABLE_WALL_THICKNESS]}

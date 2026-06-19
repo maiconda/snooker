@@ -8,6 +8,7 @@ export type AccountStatus = "onboarding_pending" | "active" | "blocked";
 export type AuthSession = {
   accessToken: string;
   status: AccountStatus;
+  userId?: string;
   email?: string;
   expiresAt?: number;
 };

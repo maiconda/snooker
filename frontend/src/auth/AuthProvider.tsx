@@ -21,6 +21,7 @@ type AuthContextValue = AuthState & {
   loginWithGoogleToken: (idToken: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshSession: () => Promise<void>;
+  acceptAccessToken: (accessToken: string) => void;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -181,6 +182,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [state.session?.accessToken]);
 
+  const acceptAccessToken = useCallback((accessToken: string) => {
+    dispatch({
+      type: "AUTHENTICATED",
+      session: sessionFromAccessToken(accessToken)
+    });
+  }, []);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       ...state,
@@ -188,9 +196,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signup,
       loginWithGoogleToken,
       logout,
-      refreshSession
+      refreshSession,
+      acceptAccessToken
     }),
-    [login, logout, refreshSession, signup, loginWithGoogleToken, state]
+    [login, logout, refreshSession, signup, loginWithGoogleToken, acceptAccessToken, state]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -13,6 +13,7 @@ export function sessionFromAccessToken(accessToken: string): AuthSession {
   return {
     accessToken,
     status: payload.status ?? "onboarding_pending",
+    userId: payload.sub,
     email: payload.email,
     expiresAt: payload.exp ? payload.exp * 1000 : undefined
   };

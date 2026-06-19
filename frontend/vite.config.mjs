@@ -9,6 +9,10 @@ export default defineConfig(({ mode }) => {
   const rootEnv = { ...loadEnv(mode, path.resolve(dirname, ".."), ""), ...process.env };
   const authApiOrigin = resolveClientAuthOrigin(rootEnv);
   const authProxyTarget = resolveAuthProxyTarget(rootEnv);
+  const profileApiOrigin = resolveClientProfileOrigin(rootEnv);
+  const profileProxyTarget = resolveProfileProxyTarget(rootEnv);
+  const lobbyApiOrigin = resolveClientLobbyOrigin(rootEnv);
+  const lobbyProxyTarget = resolveLobbyProxyTarget(rootEnv);
   const googleClientId = rootEnv.VITE_GOOGLE_CLIENT_ID || rootEnv.GOOGLE_CLIENT_ID || "";
 
   return {
@@ -16,11 +20,22 @@ export default defineConfig(({ mode }) => {
     envDir: path.resolve(dirname, ".."),
     define: {
       __AUTH_API_ORIGIN__: JSON.stringify(authApiOrigin),
+      __PROFILE_API_ORIGIN__: JSON.stringify(profileApiOrigin),
+      __LOBBY_API_ORIGIN__: JSON.stringify(lobbyApiOrigin),
       __GOOGLE_CLIENT_ID__: JSON.stringify(googleClientId)
     },
     server: {
       port: 3000,
       proxy: {
+        "/api/v1/rooms": {
+          target: lobbyProxyTarget,
+          changeOrigin: true,
+          ws: true
+        },
+        "/api/v1/profiles": {
+          target: profileProxyTarget,
+          changeOrigin: true
+        },
         "/api": {
           target: authProxyTarget,
           changeOrigin: true
@@ -42,7 +57,41 @@ function resolveClientAuthOrigin(env) {
   return "/api";
 }
 
+function resolveClientProfileOrigin(env) {
+  if (env.VITE_PROFILE_API_ORIGIN) {
+    return env.VITE_PROFILE_API_ORIGIN;
+  }
+
+  if (env.PROFILE_API_ORIGIN?.startsWith("/")) {
+    return env.PROFILE_API_ORIGIN;
+  }
+
+  return "/api";
+}
+
+function resolveClientLobbyOrigin(env) {
+  if (env.VITE_LOBBY_API_ORIGIN) {
+    return env.VITE_LOBBY_API_ORIGIN;
+  }
+
+  if (env.LOBBY_API_ORIGIN?.startsWith("/")) {
+    return env.LOBBY_API_ORIGIN;
+  }
+
+  return "/api";
+}
+
 function resolveAuthProxyTarget(env) {
   const target = env.VITE_AUTH_PROXY_TARGET || (!env.AUTH_API_ORIGIN?.startsWith("/") ? env.AUTH_API_ORIGIN : "") || "http://localhost:8081";
   return target.replace(/\/api(?:\/v1\/auth)?\/?$/, "");
+}
+
+function resolveProfileProxyTarget(env) {
+  const target = env.VITE_PROFILE_PROXY_TARGET || (!env.PROFILE_API_ORIGIN?.startsWith("/") ? env.PROFILE_API_ORIGIN : "") || "http://localhost:8082";
+  return target.replace(/\/api(?:\/v1\/profiles)?\/?$/, "");
+}
+
+function resolveLobbyProxyTarget(env) {
+  const target = env.VITE_LOBBY_PROXY_TARGET || (!env.LOBBY_API_ORIGIN?.startsWith("/") ? env.LOBBY_API_ORIGIN : "") || "http://localhost:8083";
+  return target.replace(/\/api(?:\/v1\/rooms)?\/?$/, "");
 }

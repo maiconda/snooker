@@ -6,6 +6,7 @@ import { Vector3 } from "three";
 import {
   BALL_RADIUS,
   CUE_BALL_START,
+  TABLE_RADIUS,
   createRandomPockets,
   initBalls,
   isStatic,
@@ -27,6 +28,7 @@ type SimulationLoopProps = {
   onSimulationStopped: () => void;
 };
 
+type CueBallPosition = { x: number; y: number };
 type CameraMode = "default" | "custom";
 type OrbitControlsHandle = ComponentRef<typeof OrbitControls>;
 
@@ -40,6 +42,10 @@ const AIM_HUD_UPDATE_INTERVAL = 0.08;
 const POWER_STEP = 5;
 const POWER_FINE_STEP = 1;
 const POCKET_TRANSITION_MS = 560;
+const PHYSICS_BASE_SUBSTEPS = 4;
+const PHYSICS_MAX_SUBSTEPS = 8;
+const PHYSICS_TARGET_STEP_DISTANCE = BALL_RADIUS * 0.45;
+const CUE_RESPAWN_CLEARANCE = BALL_RADIUS * 2.45;
 
 type AimInputState = {
   left: boolean;
@@ -49,6 +55,56 @@ type AimInputState = {
 
 function clampPower(value: number): number {
   return Math.min(100, Math.max(0, value));
+}
+
+function getMaxBallSpeed(balls: Ball[]): number {
+  return balls.reduce((maxSpeed, ball) => {
+    if (ball.sunk || ball.sinking) return maxSpeed;
+
+    const speed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+    return Math.max(maxSpeed, speed);
+  }, 0);
+}
+
+function isCueRespawnPositionFree(
+  position: CueBallPosition,
+  balls: Ball[],
+  cueBallId: number
+): boolean {
+  const playableRadius = TABLE_RADIUS - BALL_RADIUS;
+  const distanceFromCenter = Math.sqrt(position.x * position.x + position.y * position.y);
+  if (distanceFromCenter > playableRadius) return false;
+
+  const clearanceSq = CUE_RESPAWN_CLEARANCE * CUE_RESPAWN_CLEARANCE;
+  return balls.every((ball) => {
+    if (ball.id === cueBallId || ball.sunk || ball.sinking) return true;
+
+    const dx = position.x - ball.x;
+    const dy = position.y - ball.y;
+    return dx * dx + dy * dy >= clearanceSq;
+  });
+}
+
+function findCueRespawnPosition(balls: Ball[], cueBallId: number): CueBallPosition {
+  if (isCueRespawnPositionFree(CUE_BALL_START, balls, cueBallId)) {
+    return CUE_BALL_START;
+  }
+
+  for (const radius of [0.09, 0.16, 0.24, 0.34]) {
+    for (let index = 0; index < 16; index++) {
+      const angle = (index / 16) * Math.PI * 2;
+      const candidate = {
+        x: CUE_BALL_START.x + Math.cos(angle) * radius,
+        y: CUE_BALL_START.y + Math.sin(angle) * radius
+      };
+
+      if (isCueRespawnPositionFree(candidate, balls, cueBallId)) {
+        return candidate;
+      }
+    }
+  }
+
+  return { x: -TABLE_RADIUS * 0.38, y: 0 };
 }
 
 function SimulationLoop({
@@ -62,7 +118,14 @@ function SimulationLoop({
     if (isAiming) return;
 
     const cappedDelta = Math.min(delta, 0.03);
-    const substeps = 4;
+    const maxSpeed = getMaxBallSpeed(ballsRef.current);
+    const adaptiveSubsteps = Math.ceil(
+      (maxSpeed * cappedDelta) / PHYSICS_TARGET_STEP_DISTANCE
+    );
+    const substeps = Math.min(
+      PHYSICS_MAX_SUBSTEPS,
+      Math.max(PHYSICS_BASE_SUBSTEPS, adaptiveSubsteps)
+    );
     const subDt = cappedDelta / substeps;
 
     for (let i = 0; i < substeps; i++) {
@@ -305,17 +368,20 @@ export function App() {
         return;
       }
 
+      if (event.code === "KeyZ" || event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        setDefaultZoomed((current) => !current);
+        if (cameraMode !== "default") {
+          setCameraMode("default");
+        }
+        return;
+      }
+
       if (!isAiming || isCueAnimating) return;
 
       const powerStep = event.shiftKey ? POWER_FINE_STEP : POWER_STEP;
 
       switch (event.code) {
-        case "KeyZ":
-          if (cameraMode === "default") {
-            event.preventDefault();
-            setDefaultZoomed((current) => !current);
-          }
-          break;
         case "ArrowLeft":
           event.preventDefault();
           aimInputRef.current.left = true;
@@ -401,8 +467,9 @@ export function App() {
       cueBall.sunk = false;
       cueBall.sinking = false;
       cueBall.sinkProgress = 0;
-      cueBall.x = CUE_BALL_START.x;
-      cueBall.y = CUE_BALL_START.y;
+      const respawnPosition = findCueRespawnPosition(ballsRef.current, cueBall.id);
+      cueBall.x = respawnPosition.x;
+      cueBall.y = respawnPosition.y;
       cueBall.vx = 0;
       cueBall.vy = 0;
       cueBall.spinX = 0;
@@ -568,6 +635,10 @@ export function App() {
           <div className="key-row">
             <span className="keycap wide">Espaco</span>
             <span>Tacada</span>
+          </div>
+          <div className="key-row">
+            <span className="keycap">Z</span>
+            <span>Zoom</span>
           </div>
         </section>
 

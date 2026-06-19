@@ -94,3 +94,8 @@ type GoogleAuthResponse struct {
 type RefreshResponse struct {
 	AccessToken string `json:"access_token"`
 }
+
+type ActivateUserResponse struct {
+	AccessToken string     `json:"access_token"`
+	Status      UserStatus `json:"status"`
+}

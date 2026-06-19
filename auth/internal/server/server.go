@@ -26,7 +26,12 @@ func NewServer(cfg *config.Config, db *pgxpool.Pool) (*Server, error) {
 
 	tokenService := auth.NewTokenService(cfg.JWTSecret, tokenRepo)
 	authService := auth.NewAuthService(userRepo, tokenService, cfg.GoogleClientID)
-	authHandler := auth.NewHandler(authService, tokenService, auth.WithSecureRefreshCookie(cfg.CookieSecure))
+	authHandler := auth.NewHandler(
+		authService,
+		tokenService,
+		auth.WithSecureRefreshCookie(cfg.CookieSecure),
+		auth.WithInternalAPIKey(cfg.InternalAPIKey),
+	)
 
 	router := gin.Default()
 	router.Use(CORSMiddleware(cfg.AllowedOrigins))
@@ -51,6 +56,11 @@ func NewServer(cfg *config.Config, db *pgxpool.Pool) (*Server, error) {
 			authGroup.POST("/google", authLimit, authHandler.GoogleAuth)
 			authGroup.POST("/refresh", authHandler.Refresh)
 			authGroup.POST("/logout", auth.AuthMiddleware(tokenService), authHandler.Logout)
+		}
+
+		internalGroup := v1.Group("/internal")
+		{
+			internalGroup.POST("/users/:user_id/activate", authHandler.ActivateUser)
 		}
 	}
 

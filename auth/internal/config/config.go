@@ -15,6 +15,7 @@ type Config struct {
 
 	JWTSecret      string
 	GoogleClientID string
+	InternalAPIKey string
 
 	DBHost     string
 	DBPort     int
@@ -54,6 +55,7 @@ func Load() (*Config, error) {
 
 		JWTSecret:      jwtSecret,
 		GoogleClientID: googleClientID,
+		InternalAPIKey: getEnv("INTERNAL_API_KEY", ""),
 
 		DBHost:     getEnv("DB_HOST", "localhost"),
 		DBPort:     dbPort,
