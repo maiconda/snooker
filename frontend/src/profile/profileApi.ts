@@ -52,16 +52,23 @@ export function createPhotoUploadURL(accessToken: string, contentType: string, f
 }
 
 export async function uploadPhoto(uploadUrl: string, blob: Blob): Promise<void> {
-  const response = await fetch(uploadUrl, {
-    method: "PUT",
-    headers: {
-      "Content-Type": blob.type
-    },
-    body: blob
-  });
+  try {
+    const response = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": blob.type
+      },
+      body: blob
+    });
 
-  if (!response.ok) {
-    throw new AuthApiError("Nao foi possivel enviar a imagem.", "PHOTO_UPLOAD_FAILED", response.status);
+    if (!response.ok) {
+      throw new AuthApiError("Nao foi possivel enviar a imagem.", "PHOTO_UPLOAD_FAILED", response.status);
+    }
+  } catch (err) {
+    if (err instanceof TypeError && err.message === "Failed to fetch") {
+      throw new Error(`Falha no upload (Failed to fetch). Verifique se a URL de upload (${new URL(uploadUrl).origin}) esta correta, usa HTTPS (se o site for HTTPS) e esta acessivel pelo navegador.`);
+    }
+    throw err;
   }
 }
 

@@ -43,22 +43,24 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
     if (!token) return;
 
     async function loadData() {
+      const activeToken = session?.accessToken;
+      if (!activeToken || !roomId) return;
       try {
         setLoading(true);
         // Obter detalhes da sala
-        const roomData = await getRoom(token, roomId);
+        const roomData = await getRoom(activeToken, roomId);
         if (!active) return;
         setRoom(roomData);
 
         // Carregar perfil do criador
-        const creator = await getPublicProfile(token, roomData.creator_id);
+        const creator = await getPublicProfile(activeToken, roomData.creator_id);
         if (!active) return;
         setCreatorProfile(creator);
         profilesCache.current[roomData.creator_id] = creator;
 
         // Carregar perfil do oponente se houver
         if (roomData.opponent_id) {
-          const opponent = await getPublicProfile(token, roomData.opponent_id);
+          const opponent = await getPublicProfile(activeToken, roomData.opponent_id);
           if (!active) return;
           setOpponentProfile(opponent);
           profilesCache.current[roomData.opponent_id] = opponent;
@@ -417,7 +419,7 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
           {(isCreator || isOpponent) && (
             <Button
               onClick={handleToggleReady}
-              variant={isCreator ? (creatorReady ? "outline" : "primary") : (opponentReady ? "outline" : "primary")}
+              variant={isCreator ? (creatorReady ? "outline" : "solid") : (opponentReady ? "outline" : "solid")}
               className="sm:order-2"
             >
               {isCreator ? (creatorReady ? "Não estou pronto" : "Estou Pronto") : (opponentReady ? "Não estou pronto" : "Estou Pronto")}
