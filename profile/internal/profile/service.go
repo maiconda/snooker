@@ -165,7 +165,7 @@ func (s *Service) consumePhotoUpload(ctx context.Context, userID uuid.UUID, uplo
 
 	info, err := s.storage.HeadObject(ctx, session.ObjectKey)
 	if err != nil {
-		return "", "", fmt.Errorf("%w: objeto nao encontrado", ErrInvalidUpload)
+		return "", "", fmt.Errorf("%w: objeto nao encontrado (%v)", ErrInvalidUpload, err)
 	}
 	if info.ContentLength <= 0 || info.ContentLength > session.MaxSizeBytes {
 		return "", "", fmt.Errorf("%w: tamanho invalido", ErrInvalidUpload)
