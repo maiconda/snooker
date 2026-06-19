@@ -162,6 +162,7 @@ services:
       - VITE_PROFILE_PROXY_TARGET=http://profile:8080
       - VITE_LOBBY_API_ORIGIN=/api
       - VITE_LOBBY_PROXY_TARGET=http://lobby:8080
+      - VITE_STORAGE_PROXY_TARGET=http://minio:9000
     command: sh -c "npm ci && npm run dev"
     depends_on:
       auth:

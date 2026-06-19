@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => {
   const profileProxyTarget = resolveProfileProxyTarget(rootEnv);
   const lobbyApiOrigin = resolveClientLobbyOrigin(rootEnv);
   const lobbyProxyTarget = resolveLobbyProxyTarget(rootEnv);
+  const storageProxyTarget = resolveStorageProxyTarget(rootEnv);
   const googleClientId = rootEnv.VITE_GOOGLE_CLIENT_ID || rootEnv.GOOGLE_CLIENT_ID || "";
 
   return {
@@ -40,6 +41,10 @@ export default defineConfig(({ mode }) => {
         "/api": {
           target: authProxyTarget,
           changeOrigin: true
+        },
+        "/snooker-profiles": {
+          target: storageProxyTarget,
+          changeOrigin: false
         }
       }
     }
@@ -95,4 +100,9 @@ function resolveProfileProxyTarget(env) {
 function resolveLobbyProxyTarget(env) {
   const target = env.VITE_LOBBY_PROXY_TARGET || (!env.LOBBY_API_ORIGIN?.startsWith("/") ? env.LOBBY_API_ORIGIN : "") || "http://localhost:8083";
   return target.replace(/\/api(?:\/v1\/rooms)?\/?$/, "");
+}
+
+function resolveStorageProxyTarget(env) {
+  const target = env.VITE_STORAGE_PROXY_TARGET || env.STORAGE_PROXY_TARGET || "http://localhost:9005";
+  return target.replace(/\/snooker-profiles\/?$/, "");
 }
