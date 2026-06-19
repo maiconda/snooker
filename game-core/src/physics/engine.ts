@@ -9,14 +9,27 @@ export type Ball = {
   radius: number;
   isWhite: boolean;
   sunk: boolean;
+  sinking?: boolean;
+  sinkProgress?: number;
+  sinkStartX?: number;
+  sinkStartY?: number;
+  sinkX?: number;
+  sinkY?: number;
   color: string;
 };
 
-export const TABLE_WIDTH = 2.0;
-export const TABLE_HEIGHT = 1.0;
+export type Pocket = {
+  x: number;
+  y: number;
+};
+
+export const TABLE_RADIUS = 0.95;
+export const TABLE_WIDTH = TABLE_RADIUS * 2;
+export const TABLE_HEIGHT = TABLE_RADIUS * 2;
 export const BALL_RADIUS = 0.035;
 export const POCKET_RADIUS = 0.055;
 export const RESTITUTION = 0.96; // phenolic resin ball-to-ball elasticity
+export const CUE_BALL_START = { x: -TABLE_RADIUS * 0.64, y: 0 };
 
 const GRAVITY = 9.81;
 const SLIDING_FRICTION = 0.18;
@@ -28,24 +41,123 @@ const CUSHION_TANGENT_DAMPING_MAX = 0.9;
 const STOP_SPEED = 0.003;
 const STOP_SPIN = 0.08;
 const SLIP_TO_ROLLING_THRESHOLD = 0.018;
+const SINK_ANIMATION_SECONDS = 0.42;
+const RANDOM_POCKET_COUNT = 3;
+const RANDOM_POCKET_ATTEMPTS = 900;
+const RANDOM_POCKET_PLACEMENT_RADIUS = TABLE_RADIUS - POCKET_RADIUS * 1.7;
+const RANDOM_POCKET_MIN_DISTANCE = POCKET_RADIUS * 3.4;
+const RANDOM_POCKET_BALL_CLEARANCE = POCKET_RADIUS + BALL_RADIUS * 1.9;
+const CENTRAL_TARGET_COUNT = 8;
+const CENTRAL_FORMATION_RADIUS = BALL_RADIUS * 2.85;
+const OUTER_TARGET_MIN_RADIUS = 0.26;
+const OUTER_TARGET_MAX_RADIUS = TABLE_RADIUS - BALL_RADIUS * 3.6;
+const TARGET_PLACEMENT_CLEARANCE = BALL_RADIUS * 2.25;
 
-export const POCKETS = [
-  { x: -1.0, y: 0.5 },
-  { x: 0.0, y: 0.5 },
-  { x: 1.0, y: 0.5 },
-  { x: -1.0, y: -0.5 },
-  { x: 0.0, y: -0.5 },
-  { x: 1.0, y: -0.5 }
+export const POCKETS: Pocket[] = [
+  { x: TABLE_RADIUS * 0.55, y: 0 },
+  { x: -TABLE_RADIUS * 0.28, y: TABLE_RADIUS * 0.48 },
+  { x: -TABLE_RADIUS * 0.28, y: -TABLE_RADIUS * 0.48 }
 ];
+
+function distanceSq(ax: number, ay: number, bx: number, by: number): number {
+  const dx = ax - bx;
+  const dy = ay - by;
+  return dx * dx + dy * dy;
+}
+
+function easeOutCubic(value: number): number {
+  return 1 - Math.pow(1 - value, 3);
+}
+
+function beginSinking(ball: Ball, pocket: Pocket): void {
+  stopBall(ball);
+  ball.sinking = true;
+  ball.sinkProgress = 0;
+  ball.sinkStartX = ball.x;
+  ball.sinkStartY = ball.y;
+  ball.sinkX = pocket.x;
+  ball.sinkY = pocket.y;
+}
+
+function updateSinkingBall(ball: Ball, dt: number): void {
+  const progress = Math.min(1, (ball.sinkProgress ?? 0) + dt / SINK_ANIMATION_SECONDS);
+  const easedProgress = easeOutCubic(progress);
+  const startX = ball.sinkStartX ?? ball.x;
+  const startY = ball.sinkStartY ?? ball.y;
+  const targetX = ball.sinkX ?? ball.x;
+  const targetY = ball.sinkY ?? ball.y;
+
+  ball.sinkProgress = progress;
+  ball.x = startX + (targetX - startX) * easedProgress;
+  ball.y = startY + (targetY - startY) * easedProgress;
+
+  if (progress >= 1) {
+    ball.sinking = false;
+    ball.sunk = true;
+    ball.x = targetX;
+    ball.y = targetY;
+  }
+}
+
+function isPocketPlacementValid(pocket: Pocket, pockets: Pocket[], balls: Ball[]): boolean {
+  const minPocketDistanceSq = RANDOM_POCKET_MIN_DISTANCE * RANDOM_POCKET_MIN_DISTANCE;
+  const ballClearanceSq = RANDOM_POCKET_BALL_CLEARANCE * RANDOM_POCKET_BALL_CLEARANCE;
+
+  for (const placedPocket of pockets) {
+    if (distanceSq(pocket.x, pocket.y, placedPocket.x, placedPocket.y) < minPocketDistanceSq) {
+      return false;
+    }
+  }
+
+  for (const ball of balls) {
+    if (ball.sunk) continue;
+    if (distanceSq(pocket.x, pocket.y, ball.x, ball.y) < ballClearanceSq) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+export function createRandomPockets(balls: Ball[] = []): Pocket[] {
+  const pockets: Pocket[] = [];
+
+  for (
+    let attempt = 0;
+    pockets.length < RANDOM_POCKET_COUNT && attempt < RANDOM_POCKET_ATTEMPTS;
+    attempt++
+  ) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = Math.sqrt(Math.random()) * RANDOM_POCKET_PLACEMENT_RADIUS;
+    const pocket = {
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius
+    };
+
+    if (isPocketPlacementValid(pocket, pockets, balls)) {
+      pockets.push(pocket);
+    }
+  }
+
+  while (pockets.length < RANDOM_POCKET_COUNT) {
+    const angle = (pockets.length / RANDOM_POCKET_COUNT) * Math.PI * 2 + Math.random() * 0.45;
+    const radius = RANDOM_POCKET_PLACEMENT_RADIUS * (0.55 + Math.random() * 0.32);
+    pockets.push({
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius
+    });
+  }
+
+  return pockets;
+}
 
 export function initBalls(): Ball[] {
   const list: Ball[] = [];
-  
-  // White Cue Ball
+
   list.push({
     id: 0,
-    x: -0.5,
-    y: 0,
+    x: CUE_BALL_START.x,
+    y: CUE_BALL_START.y,
     vx: 0,
     vy: 0,
     spinX: 0,
@@ -56,39 +168,71 @@ export function initBalls(): Ball[] {
     color: "#ffffff"
   });
 
-  // Target Balls in a Triangle (Rack)
-  // Let's place the rack centered around X = 0.5
-  const startX = 0.5;
   const colors = [
-    "#facc15", "#3b82f6", "#ef4444", "#8b5cf6", "#f97316",
-    "#22c55e", "#b91c1c", "#111111", "#eab308", "#2563eb",
-    "#dc2626", "#7c3aed", "#ea580c", "#16a34a", "#991b1b"
+    "#f2f2f0", "#dededb", "#c9c9c5", "#b6b6b1", "#a4a49f",
+    "#91918c", "#7f7f7a", "#111111", "#e9e9e6", "#d5d5d1",
+    "#c1c1bc", "#adada8", "#9a9a95", "#868681", "#72726d"
   ];
-  
-  let ballId = 1;
-  const rowCount = 5;
-  const spacing = BALL_RADIUS * 2.02; // tiny gap to prevent overlapping at start
 
-  for (let row = 0; row < rowCount; row++) {
-    const x = startX + row * spacing * 0.866; // cos(30 deg) = 0.866
-    const startY = - (row * spacing) / 2;
-    for (let col = 0; col <= row; col++) {
-      const y = startY + col * spacing;
-      list.push({
-        id: ballId,
-        x,
-        y,
-        vx: 0,
-        vy: 0,
-        spinX: 0,
-        spinY: 0,
-        radius: BALL_RADIUS,
-        isWhite: false,
-        sunk: false,
-        color: colors[(ballId - 1) % colors.length]
-      });
-      ballId++;
+  const addTargetBall = (id: number, x: number, y: number) => {
+    list.push({
+      id,
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      spinX: 0,
+      spinY: 0,
+      radius: BALL_RADIUS,
+      isWhite: false,
+      sunk: false,
+      color: colors[(id - 1) % colors.length]
+    });
+  };
+
+  for (let index = 0; index < CENTRAL_TARGET_COUNT; index++) {
+    const angle = (index / CENTRAL_TARGET_COUNT) * Math.PI * 2;
+    addTargetBall(
+      index + 1,
+      Math.cos(angle) * CENTRAL_FORMATION_RADIUS,
+      Math.sin(angle) * CENTRAL_FORMATION_RADIUS
+    );
+  }
+
+  let ballId = CENTRAL_TARGET_COUNT + 1;
+  const placementClearanceSq = TARGET_PLACEMENT_CLEARANCE * TARGET_PLACEMENT_CLEARANCE;
+
+  while (ballId <= 15) {
+    let placed = false;
+
+    for (let attempt = 0; attempt < 300 && !placed; attempt++) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius =
+        OUTER_TARGET_MIN_RADIUS +
+        Math.random() * (OUTER_TARGET_MAX_RADIUS - OUTER_TARGET_MIN_RADIUS);
+      const x = Math.cos(angle) * radius;
+      const y = Math.sin(angle) * radius;
+      const overlaps = list.some(
+        (ball) => distanceSq(x, y, ball.x, ball.y) < placementClearanceSq
+      );
+
+      if (!overlaps) {
+        addTargetBall(ballId, x, y);
+        placed = true;
+      }
     }
+
+    if (!placed) {
+      const fallbackAngle = ((ballId - CENTRAL_TARGET_COUNT) / 8) * Math.PI * 2;
+      const fallbackRadius = OUTER_TARGET_MIN_RADIUS + BALL_RADIUS * 2.4;
+      addTargetBall(
+        ballId,
+        Math.cos(fallbackAngle) * fallbackRadius,
+        Math.sin(fallbackAngle) * fallbackRadius
+      );
+    }
+
+    ballId++;
   }
 
   return list;
@@ -187,10 +331,15 @@ function resolveCushionCollision(ball: Ball, normalX: number, normalY: number): 
   ball.spinY *= 0.92;
 }
 
-export function stepSimulation(balls: Ball[], dt: number): void {
+export function stepSimulation(balls: Ball[], dt: number, pockets: Pocket[] = POCKETS): void {
   // 1. Update positions and check pockets
   for (const ball of balls) {
     if (ball.sunk) continue;
+
+    if (ball.sinking) {
+      updateSinkingBall(ball, dt);
+      continue;
+    }
 
     ball.x += ball.vx * dt;
     ball.y += ball.vy * dt;
@@ -198,13 +347,12 @@ export function stepSimulation(balls: Ball[], dt: number): void {
     applyFeltFriction(ball, dt);
 
     // Check if ball falls into a pocket
-    for (const pocket of POCKETS) {
+    for (const pocket of pockets) {
       const dx = ball.x - pocket.x;
       const dy = ball.y - pocket.y;
       const distSq = dx * dx + dy * dy;
       if (distSq < POCKET_RADIUS * POCKET_RADIUS) {
-        ball.sunk = true;
-        stopBall(ball);
+        beginSinking(ball, pocket);
         break;
       }
     }
@@ -212,38 +360,29 @@ export function stepSimulation(balls: Ball[], dt: number): void {
 
   // 2. Check wall collisions
   for (const ball of balls) {
-    if (ball.sunk) continue;
+    if (ball.sunk || ball.sinking) continue;
 
-    const minX = -TABLE_WIDTH / 2 + ball.radius;
-    const maxX = TABLE_WIDTH / 2 - ball.radius;
-    const minY = -TABLE_HEIGHT / 2 + ball.radius;
-    const maxY = TABLE_HEIGHT / 2 - ball.radius;
+    const distance = Math.sqrt(ball.x * ball.x + ball.y * ball.y);
+    const maxDistance = TABLE_RADIUS - ball.radius;
 
-    if (ball.x < minX) {
-      ball.x = minX;
-      resolveCushionCollision(ball, 1, 0);
-    } else if (ball.x > maxX) {
-      ball.x = maxX;
-      resolveCushionCollision(ball, -1, 0);
-    }
+    if (distance > maxDistance) {
+      const outwardX = distance > 0 ? ball.x / distance : 1;
+      const outwardY = distance > 0 ? ball.y / distance : 0;
 
-    if (ball.y < minY) {
-      ball.y = minY;
-      resolveCushionCollision(ball, 0, 1);
-    } else if (ball.y > maxY) {
-      ball.y = maxY;
-      resolveCushionCollision(ball, 0, -1);
+      ball.x = outwardX * maxDistance;
+      ball.y = outwardY * maxDistance;
+      resolveCushionCollision(ball, -outwardX, -outwardY);
     }
   }
 
   // 3. Check ball-to-ball collisions
   for (let i = 0; i < balls.length; i++) {
     const ballA = balls[i];
-    if (ballA.sunk) continue;
+    if (ballA.sunk || ballA.sinking) continue;
 
     for (let j = i + 1; j < balls.length; j++) {
       const ballB = balls[j];
-      if (ballB.sunk) continue;
+      if (ballB.sunk || ballB.sinking) continue;
 
       const dx = ballB.x - ballA.x;
       const dy = ballB.y - ballA.y;
@@ -297,6 +436,8 @@ export function stepSimulation(balls: Ball[], dt: number): void {
 
 export function isStatic(balls: Ball[]): boolean {
   for (const ball of balls) {
+    if (ball.sinking) return false;
+
     if (
       !ball.sunk &&
       (ball.vx !== 0 || ball.vy !== 0 || ball.spinX !== 0 || ball.spinY !== 0)
