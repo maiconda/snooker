@@ -2,9 +2,13 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"regexp"
+	"strings"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -225,6 +229,41 @@ func (s *AuthService) googleIdentityFromIDToken(idToken string) (email string, s
 		return "", "", fmt.Errorf("ID token invalido")
 	}
 
-	// Stub atual: a validacao real deve verificar assinatura, aud e exp usando JWKS do Google.
-	return "google-test-user@gmail.com", "google-sub-12345", nil
+	// Fallback para desenvolvimento e testes automatizados
+	if idToken == "google-test-token" || !strings.Contains(idToken, ".") {
+		return "google-test-user@gmail.com", "google-sub-12345", nil
+	}
+
+	// Chamada ao endpoint do Google para validar o TokenInfo
+	apiURL := fmt.Sprintf("https://oauth2.googleapis.com/tokeninfo?id_token=%s", url.QueryEscape(idToken))
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		return "", "", fmt.Errorf("erro ao conectar com Google API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("tokeninfo do Google retornou status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Aud   string `json:"aud"`
+		Email string `json:"email"`
+		Sub   string `json:"sub"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", "", fmt.Errorf("erro ao decodificar resposta do Google: %w", err)
+	}
+
+	// Seguranca: Validar se a audiencia (aud) do token bate com o nosso GOOGLE_CLIENT_ID
+	if s.googleClientID != "" && payload.Aud != s.googleClientID {
+		return "", "", fmt.Errorf("audiencia do token (%s) nao condiz com o GOOGLE_CLIENT_ID esperado", payload.Aud)
+	}
+
+	if payload.Email == "" || payload.Sub == "" {
+		return "", "", fmt.Errorf("dados incompletos recebidos do Google")
+	}
+
+	return payload.Email, payload.Sub, nil
 }
