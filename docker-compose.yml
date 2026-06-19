@@ -48,6 +48,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 60s
 
   profile-postgres:
     image: postgres:15-alpine
@@ -141,6 +142,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 60s
 
   frontend:
     image: node:24-alpine
@@ -243,6 +245,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 60s
 
 volumes:
   auth_postgres_data:
