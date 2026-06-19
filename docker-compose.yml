@@ -78,7 +78,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-http://localhost:3000}
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_API_PORT:-9005}:9000"
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio_data:/data
@@ -122,7 +122,7 @@ services:
       - DB_NAME=${PROFILE_DB_NAME:-snooker_profile}
       - DB_SSLMODE=disable
       - STORAGE_ENDPOINT=minio:9000
-      - STORAGE_PUBLIC_BASE_URL=${STORAGE_PUBLIC_BASE_URL:-http://localhost:9000/snooker-profiles}
+      - STORAGE_PUBLIC_BASE_URL=${STORAGE_PUBLIC_BASE_URL:-http://localhost:9005/snooker-profiles}
       - STORAGE_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - STORAGE_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
       - STORAGE_BUCKET_NAME=${STORAGE_BUCKET_NAME:-snooker-profiles}
