@@ -45,6 +45,10 @@ export interface MatchFinishedPayload {
   room?: Room;
   reason?: string;
   winner_user_id?: string;
+  scores?: {
+    creator: number;
+    opponent: number;
+  };
   xp_awards?: XPAward[];
 }
 

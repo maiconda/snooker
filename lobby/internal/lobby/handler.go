@@ -23,6 +23,7 @@ type Handler struct {
 	invitations            *invitationStore
 	rematches              *rematchStore
 	xpAwarder              MatchXPAwarder
+	matchStateMu           sync.Mutex
 	snapshotsMu            sync.RWMutex
 	snapshots              map[string]json.RawMessage
 }
@@ -285,6 +286,7 @@ func (h *Handler) LeaveRoom(c *gin.Context) {
 	switch role {
 	case LeaveRoleCreator:
 		h.rematches.ClearRoom(updatedRoom.ID)
+		h.clearCanonicalSnapshot(c.Request.Context(), updatedRoom.ID)
 		h.publishRoomEvent("room_closed", userID.(string), updatedRoom, map[string]any{
 			"reason": "owner_left",
 			"room":   toRoomResponse(updatedRoom),
@@ -297,6 +299,7 @@ func (h *Handler) LeaveRoom(c *gin.Context) {
 
 	case LeaveRoleOpponent:
 		h.rematches.ClearRoom(updatedRoom.ID)
+		h.clearCanonicalSnapshot(c.Request.Context(), updatedRoom.ID)
 		h.publishRoomEvent("player_left", userID.(string), updatedRoom, map[string]any{
 			"user_id": userID.(string),
 			"room":    toRoomResponse(updatedRoom),
@@ -578,6 +581,7 @@ func (h *Handler) reconcileRoomLifecycle(ctx context.Context) bool {
 				continue
 			}
 			h.rematches.ClearRoom(released.Room.ID)
+			h.clearCanonicalSnapshot(ctx, released.Room.ID)
 			h.publishRoomEvent("player_left", released.OpponentID, released.Room, map[string]any{
 				"user_id": released.OpponentID,
 				"reason":  "opponent_disconnect_timeout",
@@ -593,6 +597,7 @@ func (h *Handler) reconcileRoomLifecycle(ctx context.Context) bool {
 func (h *Handler) deleteRoomStreams(roomIDs []string) {
 	for _, roomID := range roomIDs {
 		h.rematches.ClearRoom(roomID)
+		h.clearCanonicalSnapshot(context.Background(), roomID)
 		h.clearRoomInvitations(roomID, "room_closed")
 		if err := natsclient.DeleteRoomStream(roomID); err != nil {
 			log.Printf("falha ao remover stream da sala expirada %s: %v", roomID, err)

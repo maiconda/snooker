@@ -7,6 +7,7 @@ import {
   type MatchHudState,
   type MatchSnapshot,
   type Scoreboard,
+  type ShotResultSubmittedEvent,
   type ShotStartedEvent
 } from "../game/SnookerMatch";
 import { navigate } from "../lib/router";
@@ -160,19 +161,6 @@ export function GamePage({ roomId }: { roomId: string }) {
   const [matchSummary, setMatchSummary] = useState<MatchSummary | null>(null);
   const [requestedRematches, setRequestedRematches] = useState<string[]>([]);
   const [resetKey, setResetKey] = useState(roomId);
-  const [stateSyncKey, setStateSyncKey] = useState("");
-  const [isNewMatch, setIsNewMatch] = useState(() => {
-    try {
-      const isNew = Boolean(window.history.state?.isNewMatch);
-      if (isNew) {
-        window.history.replaceState(null, "", window.location.pathname + window.location.search);
-      }
-      return isNew;
-    } catch (e) {
-      console.warn("History state error:", e);
-      return false;
-    }
-  });
 
   const wsRef = useRef<WebSocket | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -311,7 +299,7 @@ export function GamePage({ roomId }: { roomId: string }) {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (!isNewMatch && roomRef.current?.status === "playing") {
+        if (roomRef.current?.status === "playing") {
           ws?.send(JSON.stringify({ type: "request_game_state", payload: {} }));
         }
       };
@@ -350,7 +338,6 @@ export function GamePage({ roomId }: { roomId: string }) {
                   navigate(`/sala/${roomFromPayload.id}`);
                 }
               }
-              setStateSyncKey(`${wsMsg.type}:${Date.now()}`);
               break;
 
             case "player_left":
@@ -379,7 +366,6 @@ export function GamePage({ roomId }: { roomId: string }) {
               if (rawPayload && typeof rawPayload === "object" && "spectators" in rawPayload) {
                 const snapshot = rawPayload as RoomSpectatorsSnapshot;
                 setSpectators(snapshot.count);
-                setStateSyncKey(`spectators:${Date.now()}`);
               }
               break;
 
@@ -445,15 +431,7 @@ export function GamePage({ roomId }: { roomId: string }) {
 
             case "shot_started":
               setRemoteCue(null);
-              if (senderId !== userId) {
-                setIncomingShot(rawPayload as ShotStartedEvent);
-              }
-              break;
-
-            case "request_game_state":
-              if (senderId !== userId) {
-                setStateSyncKey(`request_game_state:${Date.now()}`);
-              }
+              setIncomingShot(rawPayload as ShotStartedEvent);
               break;
 
             case "game_state_sync": {
@@ -461,9 +439,8 @@ export function GamePage({ roomId }: { roomId: string }) {
               if (!snapshot?.scores || !acceptSnapshot(snapshot)) {
                 break;
               }
-              if (senderId !== userId && snapshot?.updated_at_ms) {
+              if (snapshot?.updated_at_ms) {
                 setIncomingSnapshot(snapshot);
-                setIsNewMatch(false);
               }
               setScores(snapshot.scores);
               if (snapshot?.turn_user_id) {
@@ -492,7 +469,7 @@ export function GamePage({ roomId }: { roomId: string }) {
               }
               setMatchSummary((prev) => ({
                 winnerUserId: matchPayload.winner_user_id ?? prev?.winnerUserId,
-                scores: prev?.scores ?? scoresRef.current,
+                scores: matchPayload.scores ?? prev?.scores ?? scoresRef.current,
                 xpAwards: matchPayload.xp_awards ?? prev?.xpAwards ?? []
               }));
               for (const award of matchPayload.xp_awards ?? []) {
@@ -514,7 +491,6 @@ export function GamePage({ roomId }: { roomId: string }) {
                 lastCueVersionBySender.current = {};
                 clientSeqRef.current = 0;
                 lastCueSentAtRef.current = 0;
-                setIsNewMatch(true);
                 lastSnapshotVersionRef.current = { shotSeq: -1, updatedAtMs: 0 };
                 setResetKey(`${roomFromPayload.id}:${Date.now()}`);
               }
@@ -609,43 +585,17 @@ export function GamePage({ roomId }: { roomId: string }) {
     sendWS("cue_state", payload);
   }, [room?.id, sendWS]);
 
-  const handleSnapshot = useCallback((snapshot: MatchSnapshot) => {
-    if (!acceptSnapshot(snapshot)) {
-      return;
-    }
-    setScores(snapshot.scores);
-    setTurnUserId(snapshot.turn_user_id);
-    if (snapshot.status === "finished") {
-      setMatchSummary((prev) => ({
-        winnerUserId: snapshot.winner_user_id ?? prev?.winnerUserId,
-        scores: snapshot.scores,
-        xpAwards: prev?.xpAwards ?? []
-      }));
-    }
-    sendWS("game_state_sync", snapshot);
-    setIsNewMatch(false);
-  }, [acceptSnapshot, sendWS, setIsNewMatch]);
-
-  const handleMatchFinished = useCallback((summary: { winnerUserId: string; scores: Scoreboard }) => {
-    setMatchSummary((prev) => ({
-      winnerUserId: summary.winnerUserId,
-      scores: summary.scores,
-      xpAwards: prev?.xpAwards ?? []
-    }));
-    sendWS("match_end", {
-      reason: "normal",
-      winner_user_id: summary.winnerUserId,
-      scores: summary.scores
-    });
-  }, [sendWS]);
-
   const handleLocalShotStarted = useCallback((shot: ShotStartedEvent) => {
     sendWS("shot_started", shot);
   }, [sendWS]);
 
-  const handleRequestGameState = useCallback(() => {
-    sendWS("request_game_state", {});
-  }, [sendWS]);
+  const handleShotResult = useCallback((result: ShotResultSubmittedEvent) => {
+    if (!room) return;
+    sendWS("shot_result_submitted", {
+      ...result,
+      match_id: room.id
+    });
+  }, [room?.id, sendWS]);
 
   const handleSendChat = (event: FormEvent) => {
     event.preventDefault();
@@ -697,12 +647,8 @@ export function GamePage({ roomId }: { roomId: string }) {
           resetKey={resetKey}
           onCueState={sendCueState}
           onLocalShotStarted={handleLocalShotStarted}
-          onSnapshot={handleSnapshot}
-          onMatchFinished={handleMatchFinished}
+          onShotResult={handleShotResult}
           onHudChange={setHud}
-          requestStateSyncKey={stateSyncKey}
-          isNewMatch={isNewMatch}
-          onRequestGameState={handleRequestGameState}
         />
       </section>
 

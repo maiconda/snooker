@@ -3,6 +3,7 @@ package lobby
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -53,6 +54,9 @@ type Repository interface {
 	CloseRoomsWithExpiredCreatorDisconnect(ctx context.Context, disconnectedBefore time.Time) ([]string, error)
 	ReleaseOpponentIfDisconnected(ctx context.Context, roomID string, disconnectedBefore time.Time) (*Room, bool, error)
 	ReleaseRoomsWithExpiredOpponentDisconnect(ctx context.Context, disconnectedBefore time.Time) ([]ReleasedOpponent, error)
+	GetMatchSnapshot(ctx context.Context, roomID string) (json.RawMessage, error)
+	UpsertMatchSnapshot(ctx context.Context, roomID string, snapshot json.RawMessage) error
+	DeleteMatchSnapshot(ctx context.Context, roomID string) error
 }
 
 type postgresRepository struct {
@@ -861,6 +865,40 @@ func (r *postgresRepository) ReleaseRoomsWithExpiredOpponentDisconnect(ctx conte
 	}
 
 	return released, rows.Err()
+}
+
+func (r *postgresRepository) GetMatchSnapshot(ctx context.Context, roomID string) (json.RawMessage, error) {
+	var snapshot json.RawMessage
+	err := r.pool.QueryRow(ctx, "SELECT snapshot FROM room_match_states WHERE room_id = $1", roomID).Scan(&snapshot)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRoomNotFound
+		}
+		return nil, fmt.Errorf("falha ao buscar snapshot da partida: %w", err)
+	}
+	return append(json.RawMessage(nil), snapshot...), nil
+}
+
+func (r *postgresRepository) UpsertMatchSnapshot(ctx context.Context, roomID string, snapshot json.RawMessage) error {
+	query := `
+		INSERT INTO room_match_states (room_id, snapshot, updated_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (room_id)
+		DO UPDATE SET snapshot = EXCLUDED.snapshot, updated_at = NOW()
+	`
+	_, err := r.pool.Exec(ctx, query, roomID, snapshot)
+	if err != nil {
+		return fmt.Errorf("falha ao salvar snapshot da partida: %w", err)
+	}
+	return nil
+}
+
+func (r *postgresRepository) DeleteMatchSnapshot(ctx context.Context, roomID string) error {
+	_, err := r.pool.Exec(ctx, "DELETE FROM room_match_states WHERE room_id = $1", roomID)
+	if err != nil {
+		return fmt.Errorf("falha ao remover snapshot da partida: %w", err)
+	}
+	return nil
 }
 
 func (r *postgresRepository) generateUniqueCode(ctx context.Context) (string, error) {

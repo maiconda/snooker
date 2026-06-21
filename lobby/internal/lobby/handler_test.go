@@ -167,10 +167,29 @@ func (m *MockRepository) ReleaseRoomsWithExpiredOpponentDisconnect(ctx context.C
 	return args.Get(0).([]ReleasedOpponent), args.Error(1)
 }
 
+func (m *MockRepository) GetMatchSnapshot(ctx context.Context, roomID string) (json.RawMessage, error) {
+	args := m.Called(ctx, roomID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(json.RawMessage), args.Error(1)
+}
+
+func (m *MockRepository) UpsertMatchSnapshot(ctx context.Context, roomID string, snapshot json.RawMessage) error {
+	args := m.Called(ctx, roomID, snapshot)
+	return args.Error(0)
+}
+
+func (m *MockRepository) DeleteMatchSnapshot(ctx context.Context, roomID string) error {
+	args := m.Called(ctx, roomID)
+	return args.Error(0)
+}
+
 func expectNoLifecycleChanges(repo *MockRepository) {
 	repo.On("ExpireRooms", mock.Anything).Return([]string{}, nil).Maybe()
 	repo.On("CloseRoomsWithExpiredCreatorDisconnect", mock.Anything, mock.Anything).Return([]string{}, nil).Maybe()
 	repo.On("ReleaseRoomsWithExpiredOpponentDisconnect", mock.Anything, mock.Anything).Return([]ReleasedOpponent{}, nil).Maybe()
+	repo.On("DeleteMatchSnapshot", mock.Anything, mock.Anything).Return(nil).Maybe()
 }
 
 func setupTestRouter(repo Repository) *gin.Engine {
@@ -483,6 +502,7 @@ func TestHandler_ListPublicRoomsAfterOpponentDisconnectCleanup(t *testing.T) {
 	repo.On("ReleaseRoomsWithExpiredOpponentDisconnect", mock.Anything, mock.Anything).Return([]ReleasedOpponent{
 		{Room: releasedRoom, OpponentID: releasedOpponentID},
 	}, nil).Once()
+	repo.On("DeleteMatchSnapshot", mock.Anything, "room-uuid").Return(nil).Once()
 	repo.On("ListPublicRooms", mock.Anything).Return(expectedRooms, nil)
 
 	req, _ := http.NewRequest(http.MethodGet, "/api/v1/rooms/public", nil)

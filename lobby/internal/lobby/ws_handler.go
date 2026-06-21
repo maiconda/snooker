@@ -540,8 +540,16 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		if err != nil {
 			return false
 		}
-		h.clearCachedSnapshot(room.ID)
+		h.matchStateMu.Lock()
+		h.clearCachedSnapshot(startedRoom.ID)
+		snapshot := newInitialMatchSnapshot(startedRoom)
+		stored := h.storeCanonicalSnapshot(ctx, startedRoom.ID, snapshot)
+		h.matchStateMu.Unlock()
+		if !stored {
+			return false
+		}
 		_ = nc.Publish(natsclient.RoomEventsSubject(room.ID), eventBytes)
+		publishCanonicalSnapshot(nc, startedRoom.ID, snapshot)
 		h.clearRoomInvitations(room.ID, "room_filled")
 		h.rematches.ClearRoom(room.ID)
 		h.broadcastPublicRooms(context.Background())
@@ -555,6 +563,14 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		if !ok {
 			return false
 		}
+		snapshot, ok := h.getCanonicalSnapshot(ctx, room.ID)
+		if !ok ||
+			snapshot.Status != matchStatusAiming ||
+			snapshot.TurnUserID != userID ||
+			(payload["match_id"] != "" && payload["match_id"] != room.ID) ||
+			payload["shot_seq"] != snapshot.ShotSeq {
+			return false
+		}
 		eventBytes, err := makeWSEvent("cue_state", userID, payload)
 		if err != nil {
 			return false
@@ -562,69 +578,110 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		_ = nc.Publish(natsclient.RoomEventsSubject(room.ID), eventBytes)
 		return true
 
-	case "game_state_sync":
-		if !isParticipant || room.Status != StatusPlaying || !isAuthoritativeGameStateSender(room, userID) {
+	case "shot_started":
+		if !isParticipant || room.Status != StatusPlaying {
 			return false
 		}
-		if !h.setCachedSnapshot(room.ID, event.Payload) {
+		intent, ok := parseShotIntent(event.Payload)
+		if !ok {
 			return false
 		}
-		event.SenderID = userID
-		eventBytes, err := json.Marshal(event)
+		if intent.MatchID != "" && intent.MatchID != room.ID {
+			return false
+		}
+		var activeShot activeShotState
+		started := func() bool {
+			h.matchStateMu.Lock()
+			defer h.matchStateMu.Unlock()
+
+			snapshot, ok := h.ensureCanonicalSnapshot(ctx, room)
+			if !ok ||
+				snapshot.Status != matchStatusAiming ||
+				snapshot.WinnerUserID != "" ||
+				snapshot.TurnUserID != userID {
+				return false
+			}
+
+			nextSeq := snapshot.ShotSeq + 1
+			activeShot = activeShotState{
+				MatchID:           room.ID,
+				ShotSeq:           nextSeq,
+				ShooterUserID:     userID,
+				Angle:             intent.Angle,
+				Power:             intent.Power,
+				ServerStartedAtMS: time.Now().UnixMilli(),
+			}
+			snapshot.ShotSeq = nextSeq
+			snapshot.Status = matchStatusMoving
+			snapshot.ActiveShot = &activeShot
+			snapshot.UpdatedAtMS = time.Now().UnixMilli()
+			return h.storeCanonicalSnapshot(ctx, room.ID, snapshot)
+		}()
+		if !started {
+			return false
+		}
+
+		eventBytes, err := makeWSEvent("shot_started", userID, activeShot)
 		if err != nil {
 			return false
 		}
 		_ = nc.Publish(natsclient.RoomEventsSubject(room.ID), eventBytes)
 		return true
 
-	case "request_game_state":
-		if room.Status != StatusPlaying {
-			return false
-		}
-		if cachedSnap, ok := h.getCachedSnapshot(room.ID); ok {
-			var cachedEvent WSEvent
-			cachedEvent.Type = "game_state_sync"
-			cachedEvent.SenderID = "server"
-			cachedEvent.Payload = cachedSnap
-			eventBytes, err := json.Marshal(cachedEvent)
-			if err == nil {
-				_ = nc.Publish(natsclient.RoomEventsSubject(room.ID), eventBytes)
-			}
-		} else {
-			event.SenderID = userID
-			eventBytes, err := json.Marshal(event)
-			if err == nil {
-				_ = nc.Publish(natsclient.RoomEventsSubject(room.ID), eventBytes)
-			}
-		}
-		return true
-
-	case "match_end":
+	case "shot_result_submitted":
 		if !isParticipant || room.Status != StatusPlaying {
 			return false
 		}
-		matchEnd := matchEndPayload(event.Payload)
+		result, ok := parseShotResult(event.Payload)
+		if !ok {
+			return false
+		}
+		if result.MatchID != "" && result.MatchID != room.ID {
+			return false
+		}
+		var nextSnapshot matchSnapshot
+		committed := func() bool {
+			h.matchStateMu.Lock()
+			defer h.matchStateMu.Unlock()
+
+			snapshot, ok := h.getCanonicalSnapshot(ctx, room.ID)
+			if !ok || snapshot.ActiveShot == nil || snapshot.ActiveShot.ShooterUserID != userID {
+				return false
+			}
+
+			var applied bool
+			nextSnapshot, applied = applyShotResult(room, snapshot, result)
+			if !applied {
+				return false
+			}
+			return h.storeCanonicalSnapshot(ctx, room.ID, nextSnapshot)
+		}()
+		if !committed {
+			return false
+		}
+		publishCanonicalSnapshot(nc, room.ID, nextSnapshot)
+
+		if nextSnapshot.WinnerUserID == "" {
+			return true
+		}
+
 		finishedRoom, err := h.repo.FinishRoom(ctx, room.ID)
 		if err != nil {
 			log.Printf("falha ao finalizar partida da sala %s: %v", room.ID, err)
 			return false
 		}
-		h.clearCachedSnapshot(room.ID)
-		winnerUserID := matchEnd.WinnerUserID
-		if !isRoomParticipant(finishedRoom, winnerUserID) {
-			winnerUserID = userID
-		}
-		xpAwards, err := h.xpAwarder.AwardMatchXP(ctx, winnerUserID, roomParticipantIDs(finishedRoom))
+		xpAwards, err := h.xpAwarder.AwardMatchXP(ctx, nextSnapshot.WinnerUserID, roomParticipantIDs(finishedRoom))
 		if err != nil {
 			log.Printf("falha ao premiar XP da sala %s: %v", room.ID, err)
 		}
 		if finishedRoom.OpponentID != nil {
 			h.rematches.ConfigureRoom(finishedRoom.ID, finishedRoom.CreatorID, *finishedRoom.OpponentID)
 		}
-		eventBytes, err := makeWSEvent("match_finished", userID, map[string]any{
+		eventBytes, err := makeWSEvent("match_finished", "server", map[string]any{
 			"room":           toRoomResponse(finishedRoom),
-			"reason":         matchEnd.Reason,
-			"winner_user_id": winnerUserID,
+			"reason":         "normal",
+			"winner_user_id": nextSnapshot.WinnerUserID,
+			"scores":         nextSnapshot.Scores,
 			"xp_awards":      xpAwards,
 		})
 		if err != nil {
@@ -633,6 +690,31 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		_ = nc.Publish(natsclient.RoomEventsSubject(room.ID), eventBytes)
 		h.broadcastPublicRooms(context.Background())
 		return true
+
+	case "game_state_sync":
+		return false
+
+	case "request_game_state":
+		if room.Status != StatusPlaying {
+			return false
+		}
+		h.matchStateMu.Lock()
+		snapshot, ok := h.ensureCanonicalSnapshot(ctx, room)
+		h.matchStateMu.Unlock()
+		if !ok {
+			return false
+		}
+		publishCanonicalSnapshot(nc, room.ID, snapshot)
+		if snapshot.ActiveShot != nil {
+			eventBytes, err := makeWSEvent("shot_started", snapshot.ActiveShot.ShooterUserID, snapshot.ActiveShot)
+			if err == nil {
+				_ = nc.Publish(natsclient.RoomEventsSubject(room.ID), eventBytes)
+			}
+		}
+		return true
+
+	case "match_end":
+		return false
 
 	case "rematch_request":
 		if !isParticipant || room.Status != StatusFinished || room.OpponentID == nil {
@@ -660,7 +742,14 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 			return false
 		}
 		h.rematches.ClearRoom(room.ID)
-		h.clearCachedSnapshot(room.ID)
+		h.matchStateMu.Lock()
+		h.clearCachedSnapshot(startedRoom.ID)
+		snapshot := newInitialMatchSnapshot(startedRoom)
+		stored := h.storeCanonicalSnapshot(ctx, startedRoom.ID, snapshot)
+		h.matchStateMu.Unlock()
+		if !stored {
+			return false
+		}
 		eventBytes, err = makeWSEvent("match_start", userID, map[string]any{
 			"room": toRoomResponse(startedRoom),
 		})
@@ -668,6 +757,7 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 			return false
 		}
 		_ = nc.Publish(natsclient.RoomEventsSubject(room.ID), eventBytes)
+		publishCanonicalSnapshot(nc, startedRoom.ID, snapshot)
 		h.broadcastPublicRooms(context.Background())
 		return true
 
@@ -680,7 +770,7 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 			return false
 		}
 		h.rematches.ClearRoom(room.ID)
-		h.clearCachedSnapshot(room.ID)
+		h.clearCanonicalSnapshot(ctx, room.ID)
 		h.clearRoomInvitations(room.ID, "room_closed")
 		eventBytes, err := makeWSEvent("room_closed", userID, map[string]any{
 			"reason": "owner_closed",
@@ -696,16 +786,7 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		return true
 
 	default:
-		if !isParticipant {
-			return false
-		}
-		event.SenderID = userID
-		eventBytes, err := json.Marshal(event)
-		if err != nil {
-			return false
-		}
-		_ = nc.Publish(natsclient.RoomEventsSubject(room.ID), eventBytes)
-		return true
+		return false
 	}
 }
 
@@ -773,34 +854,6 @@ func normalizeAngle(value float64) float64 {
 		normalized -= fullTurn
 	}
 	return normalized
-}
-
-type parsedMatchEndPayload struct {
-	Reason       string
-	WinnerUserID string
-}
-
-func matchEndPayload(raw json.RawMessage) parsedMatchEndPayload {
-	var payload struct {
-		Reason       string `json:"reason"`
-		WinnerUserID string `json:"winner_user_id"`
-	}
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &payload)
-	}
-
-	reason := strings.TrimSpace(payload.Reason)
-	if reason == "" {
-		reason = "normal"
-	}
-	if len(reason) > 80 {
-		reason = reason[:80]
-	}
-
-	return parsedMatchEndPayload{
-		Reason:       reason,
-		WinnerUserID: strings.TrimSpace(payload.WinnerUserID),
-	}
 }
 
 func (h *Handler) sendPublicRoomsSnapshot(ctx context.Context, writeChan chan<- []byte, done <-chan struct{}) {
@@ -872,6 +925,7 @@ func (h *Handler) scheduleOwnerDisconnectClose(roomID string, creatorID string) 
 		}
 
 		h.rematches.ClearRoom(roomID)
+		h.clearCanonicalSnapshot(context.Background(), roomID)
 		eventBytes, err := makeWSEvent("room_closed", creatorID, map[string]string{"reason": "owner_disconnect_timeout"})
 		if err == nil {
 			if nc := natsclient.GetConn(); nc != nil {
@@ -904,6 +958,7 @@ func (h *Handler) scheduleOpponentDisconnectRelease(roomID string, opponentID st
 		}
 
 		h.rematches.ClearRoom(roomID)
+		h.clearCanonicalSnapshot(context.Background(), roomID)
 		h.publishRoomEvent("player_left", opponentID, room, map[string]any{
 			"user_id": opponentID,
 			"reason":  "opponent_disconnect_timeout",
@@ -940,10 +995,6 @@ func roomParticipantRole(room *Room, userID string) LeaveRole {
 		return LeaveRoleOpponent
 	}
 	return LeaveRoleSpectator
-}
-
-func isAuthoritativeGameStateSender(room *Room, userID string) bool {
-	return room != nil && room.CreatorID == userID
 }
 
 func chatPayload(raw json.RawMessage) (map[string]any, bool) {
@@ -1072,4 +1123,98 @@ func (h *Handler) clearCachedSnapshot(roomID string) {
 	if h.snapshots != nil {
 		delete(h.snapshots, roomID)
 	}
+}
+
+func (h *Handler) getCanonicalSnapshot(ctx context.Context, roomID string) (matchSnapshot, bool) {
+	if cached, ok := h.getCachedSnapshot(roomID); ok {
+		if snapshot, ok := parseCanonicalSnapshot(cached); ok {
+			return snapshot, true
+		}
+	}
+
+	if h.repo == nil {
+		return matchSnapshot{}, false
+	}
+
+	persisted, err := h.repo.GetMatchSnapshot(ctx, roomID)
+	if err != nil {
+		return matchSnapshot{}, false
+	}
+	if !h.setCachedSnapshot(roomID, persisted) {
+		return matchSnapshot{}, false
+	}
+	return parseCanonicalSnapshot(persisted)
+}
+
+func (h *Handler) ensureCanonicalSnapshot(ctx context.Context, room *Room) (matchSnapshot, bool) {
+	if snapshot, ok := h.getCanonicalSnapshot(ctx, room.ID); ok {
+		return snapshot, true
+	}
+	if room.Status != StatusPlaying {
+		return matchSnapshot{}, false
+	}
+	snapshot := newInitialMatchSnapshot(room)
+	if !h.storeCanonicalSnapshot(ctx, room.ID, snapshot) {
+		return matchSnapshot{}, false
+	}
+	return snapshot, true
+}
+
+func parseCanonicalSnapshot(raw json.RawMessage) (matchSnapshot, bool) {
+	var snapshot matchSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return snapshot, false
+	}
+	if snapshot.ShotSeq < 0 || snapshot.UpdatedAtMS <= 0 || snapshot.TurnUserID == "" || len(snapshot.Balls) == 0 {
+		return snapshot, false
+	}
+	return snapshot, true
+}
+
+func (h *Handler) storeCanonicalSnapshot(ctx context.Context, roomID string, snapshot matchSnapshot) bool {
+	if snapshot.UpdatedAtMS <= 0 {
+		snapshot.UpdatedAtMS = time.Now().UnixMilli()
+	}
+	if snapshot.AuditHash == "" {
+		snapshot.AuditHash = auditHashForBalls(snapshot.Balls)
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		log.Printf("falha ao serializar snapshot canonico da sala %s: %v", roomID, err)
+		return false
+	}
+	if !h.setCachedSnapshot(roomID, raw) {
+		return false
+	}
+	if h.repo != nil {
+		if err := h.repo.UpsertMatchSnapshot(ctx, roomID, raw); err != nil {
+			log.Printf("falha ao persistir snapshot canonico da sala %s: %v", roomID, err)
+			h.clearCachedSnapshot(roomID)
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Handler) clearCanonicalSnapshot(ctx context.Context, roomID string) {
+	h.clearCachedSnapshot(roomID)
+	if h.repo == nil {
+		return
+	}
+	if err := h.repo.DeleteMatchSnapshot(ctx, roomID); err != nil {
+		log.Printf("falha ao remover snapshot canonico da sala %s: %v", roomID, err)
+	}
+}
+
+func publishCanonicalSnapshot(nc *nats.Conn, roomID string, snapshot matchSnapshot) bool {
+	eventBytes, err := makeWSEvent("game_state_sync", "server", snapshot)
+	if err != nil {
+		log.Printf("falha ao serializar snapshot canonico da sala %s: %v", roomID, err)
+		return false
+	}
+	if err := nc.Publish(natsclient.RoomEventsSubject(roomID), eventBytes); err != nil {
+		log.Printf("falha ao publicar snapshot canonico da sala %s: %v", roomID, err)
+		return false
+	}
+	return true
 }

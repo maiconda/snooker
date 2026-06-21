@@ -101,17 +101,136 @@ func TestCachedSnapshotRejectsOlderVersions(t *testing.T) {
 	assert.JSONEq(t, string(fresher), string(cached))
 }
 
-func TestOnlyCreatorPublishesAuthoritativeGameState(t *testing.T) {
+func TestServerAppliesShotResultRulesFromCanonicalBallIDs(t *testing.T) {
 	opponentID := "opponent-1"
 	room := &Room{
+		ID:         "room-1",
 		CreatorID:  "creator-1",
 		OpponentID: &opponentID,
 	}
+	current := newInitialMatchSnapshot(room)
+	current.ShotSeq = 1
+	current.Status = matchStatusMoving
+	current.ActiveShot = &activeShotState{
+		ShotSeq:       1,
+		ShooterUserID: "creator-1",
+		Angle:         0.4,
+		Power:         50,
+	}
 
-	assert.True(t, isAuthoritativeGameStateSender(room, "creator-1"))
-	assert.False(t, isAuthoritativeGameStateSender(room, "opponent-1"))
-	assert.False(t, isAuthoritativeGameStateSender(room, "spectator-1"))
-	assert.False(t, isAuthoritativeGameStateSender(nil, "creator-1"))
+	resultBalls := append([]matchBall(nil), current.Balls...)
+	for i := range resultBalls {
+		if resultBalls[i].ID == 1 {
+			resultBalls[i].Sunk = true
+			resultBalls[i].Owner = "opponent"
+			resultBalls[i].Points = 999
+		}
+	}
+
+	next, ok := applyShotResult(room, current, shotResultPayload{
+		ShotSeq:       1,
+		ShooterUserID: "creator-1",
+		Balls:         resultBalls,
+	})
+
+	assert.True(t, ok)
+	assert.Equal(t, 10, next.Scores.Creator)
+	assert.Equal(t, 0, next.Scores.Opponent)
+	assert.Equal(t, "creator-1", next.TurnUserID)
+	assert.Equal(t, matchStatusAiming, next.Status)
+	assert.Nil(t, next.ActiveShot)
+	assert.NotEmpty(t, next.AuditHash)
+}
+
+func TestServerRejectsShotResultFromWrongShooter(t *testing.T) {
+	opponentID := "opponent-1"
+	room := &Room{
+		ID:         "room-1",
+		CreatorID:  "creator-1",
+		OpponentID: &opponentID,
+	}
+	current := newInitialMatchSnapshot(room)
+	current.ShotSeq = 1
+	current.Status = matchStatusMoving
+	current.ActiveShot = &activeShotState{
+		ShotSeq:       1,
+		ShooterUserID: "creator-1",
+		Angle:         0.4,
+		Power:         50,
+	}
+
+	_, ok := applyShotResult(room, current, shotResultPayload{
+		ShotSeq:       1,
+		ShooterUserID: "opponent-1",
+		Balls:         current.Balls,
+	})
+
+	assert.False(t, ok)
+}
+
+func TestServerRejectsShotResultThatUnsinksCommittedBalls(t *testing.T) {
+	opponentID := "opponent-1"
+	room := &Room{
+		ID:         "room-1",
+		CreatorID:  "creator-1",
+		OpponentID: &opponentID,
+	}
+	current := newInitialMatchSnapshot(room)
+	for i := range current.Balls {
+		if current.Balls[i].ID == 1 {
+			current.Balls[i].Sunk = true
+		}
+	}
+	current.ShotSeq = 2
+	current.Status = matchStatusMoving
+	current.ActiveShot = &activeShotState{
+		ShotSeq:       2,
+		ShooterUserID: "opponent-1",
+		Angle:         0.4,
+		Power:         50,
+	}
+
+	resultBalls := append([]matchBall(nil), current.Balls...)
+	for i := range resultBalls {
+		if resultBalls[i].ID == 1 {
+			resultBalls[i].Sunk = false
+		}
+	}
+
+	_, ok := applyShotResult(room, current, shotResultPayload{
+		ShotSeq:       2,
+		ShooterUserID: "opponent-1",
+		Balls:         resultBalls,
+	})
+
+	assert.False(t, ok)
+}
+
+func TestServerRejectsShotResultWithMismatchedAuditHash(t *testing.T) {
+	opponentID := "opponent-1"
+	room := &Room{
+		ID:         "room-1",
+		CreatorID:  "creator-1",
+		OpponentID: &opponentID,
+	}
+	current := newInitialMatchSnapshot(room)
+	current.ShotSeq = 1
+	current.Status = matchStatusMoving
+	current.ActiveShot = &activeShotState{
+		ShotSeq:       1,
+		ShooterUserID: "creator-1",
+		Angle:         0.4,
+		Power:         50,
+	}
+
+	_, ok := applyShotResult(room, current, shotResultPayload{
+		ShotSeq:       1,
+		ShooterUserID: "creator-1",
+		Balls:         current.Balls,
+		AuditHash:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
+
+	assert.False(t, ok)
 }
 
 func TestRematchStoreRequiresBothConfiguredPlayers(t *testing.T) {
