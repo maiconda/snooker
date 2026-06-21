@@ -1,5 +1,6 @@
 # Variáveis de Ambiente e Segredos
 .env
+.env.server
 
 # Binários e Executáveis do Go
 /bin/
