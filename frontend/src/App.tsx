@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import { HomePage } from "./pages/HomePage";
 import { LoginPage } from "./pages/LoginPage";
@@ -7,11 +7,16 @@ import { SignupPage } from "./pages/SignupPage";
 import { LobbyRoomPage } from "./pages/LobbyRoomPage";
 import { usePathname, navigate } from "./lib/router";
 import { Button } from "./components/Button";
+import { LobbyNotificationsProvider } from "./lobby/LobbyNotificationsProvider";
+
+const GamePage = lazy(() => import("./pages/GamePage").then((module) => ({ default: module.GamePage })));
 
 export function App() {
   return (
     <AuthProvider>
-      <Routes />
+      <LobbyNotificationsProvider>
+        <Routes />
+      </LobbyNotificationsProvider>
     </AuthProvider>
   );
 }
@@ -43,7 +48,7 @@ function Routes() {
     if (auth.phase === "authenticated") {
       if (auth.session?.status === "onboarding_pending" && path !== "/perfil") {
         navigate("/perfil");
-      } else if (auth.session?.status !== "onboarding_pending" && path !== "/" && path !== "/perfil" && !path.startsWith("/sala/")) {
+      } else if (auth.session?.status !== "onboarding_pending" && path !== "/" && path !== "/perfil" && !path.startsWith("/sala/") && !path.startsWith("/jogar/")) {
         navigate("/");
       }
     } else if (auth.phase === "anonymous") {
@@ -73,6 +78,14 @@ function Routes() {
     if (path.startsWith("/sala/")) {
       const roomId = path.substring(6);
       return <LobbyRoomPage roomId={roomId} />;
+    }
+    if (path.startsWith("/jogar/")) {
+      const roomId = path.substring(7);
+      return (
+        <Suspense fallback={<main className="min-h-screen bg-neutral-950" />}>
+          <GamePage roomId={roomId} />
+        </Suspense>
+      );
     }
     return <main className="min-h-screen bg-white" />;
   }

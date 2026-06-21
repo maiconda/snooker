@@ -38,6 +38,7 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 		migrationCreateExtensions,
 		migrationCreateTypes,
 		migrationCreateRooms,
+		migrationAddRoomPresenceColumns,
 		migrationCreateIndexes,
 	}
 
@@ -71,12 +72,25 @@ CREATE TABLE IF NOT EXISTS rooms (
     status        room_status NOT NULL DEFAULT 'waiting',
     is_private    BOOLEAN NOT NULL DEFAULT FALSE,
     created_at    TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    expires_at    TIMESTAMP WITH TIME ZONE NOT NULL
+    expires_at    TIMESTAMP WITH TIME ZONE NOT NULL,
+    creator_disconnected_at TIMESTAMP WITH TIME ZONE NULL,
+    opponent_disconnected_at TIMESTAMP WITH TIME ZONE NULL,
+    creator_connection_id TEXT NULL,
+    opponent_connection_id TEXT NULL
 );
+`
+
+const migrationAddRoomPresenceColumns = `
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS creator_disconnected_at TIMESTAMP WITH TIME ZONE NULL;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS opponent_disconnected_at TIMESTAMP WITH TIME ZONE NULL;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS creator_connection_id TEXT NULL;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS opponent_connection_id TEXT NULL;
 `
 
 const migrationCreateIndexes = `
 CREATE INDEX IF NOT EXISTS idx_rooms_code ON rooms(code) WHERE code IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_rooms_status ON rooms(status);
 CREATE INDEX IF NOT EXISTS idx_rooms_creator ON rooms(creator_id);
+CREATE INDEX IF NOT EXISTS idx_rooms_owner_disconnect ON rooms(creator_disconnected_at) WHERE creator_disconnected_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_rooms_opponent_disconnect ON rooms(opponent_disconnected_at) WHERE opponent_disconnected_at IS NOT NULL;
 `

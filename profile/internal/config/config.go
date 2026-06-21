@@ -103,7 +103,7 @@ func Load() (*Config, error) {
 		DBPort:     dbPort,
 		DBUser:     getEnv("DB_USER", "postgres"),
 		DBPassword: getEnv("DB_PASSWORD", "postgres"),
-		DBName:     getEnv("DB_NAME", "snooker_profile"),
+		DBName:     getEnv("DB_NAME", "snooker_game"),
 		DBSSLMode:  getEnv("DB_SSLMODE", "disable"),
 
 		StorageEndpoint:      storageEndpoint,

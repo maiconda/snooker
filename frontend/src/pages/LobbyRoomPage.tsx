@@ -1,17 +1,35 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../auth/AuthProvider";
 import { Button } from "../components/Button";
-import { getRoom, joinRoom } from "../lobby/lobbyApi";
-import type { Room, WSEvent } from "../lobby/types";
-import { getMyProfile, getPublicProfile } from "../profile/profileApi";
+import { getRoom, inviteUser, leaveRoom } from "../lobby/lobbyApi";
+import { useLobbyNotifications } from "../lobby/LobbyNotificationsProvider";
+import type {
+  MatchFinishedPayload,
+  PresenceUser,
+  RematchRequestedPayload,
+  Room,
+  RoomSpectatorsSnapshot,
+  WSEvent
+} from "../lobby/types";
+import { getPublicProfile } from "../profile/profileApi";
 import type { Profile } from "../profile/types";
 import { navigate } from "../lib/router";
 
 type ChatMessage = {
+  messageId: string;
   senderId: string;
   senderName: string;
   text: string;
   timestamp: number;
+};
+
+type RoomEventPayload = {
+  room?: Room;
+  message_id?: string;
+  text?: string;
+  ready?: boolean;
+  created_at?: string;
+  reason?: string;
 };
 
 export function LobbyRoomPage({ roomId }: { roomId: string }) {
@@ -19,12 +37,16 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
   const [room, setRoom] = useState<Room | null>(null);
   const [creatorProfile, setCreatorProfile] = useState<Profile | null>(null);
   const [opponentProfile, setOpponentProfile] = useState<Profile | null>(null);
+  const [profilesById, setProfilesById] = useState<Record<string, Profile>>({});
+  const [spectators, setSpectators] = useState<PresenceUser[]>([]);
+  const [inviteStatuses, setInviteStatuses] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // Estados de prontidão locais
   const [creatorReady, setCreatorReady] = useState(false);
   const [opponentReady, setOpponentReady] = useState(false);
+  const [rematchRequestedBy, setRematchRequestedBy] = useState<Set<string>>(new Set());
 
   // Chat
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -32,15 +54,48 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const { onlineUsers, clearedInvites } = useLobbyNotifications();
   const profilesCache = useRef<Record<string, Profile>>({});
+  const chatMessageIdsRef = useRef<Set<string>>(new Set());
   const roomRef = useRef<Room | null>(null);
   roomRef.current = room;
+
+  const rememberProfile = (userId: string, profile: Profile) => {
+    setProfilesById((prev) => prev[userId] ? prev : { ...prev, [userId]: profile });
+  };
+
+  const ensureProfile = async (token: string, userId: string, isActive: () => boolean = () => true) => {
+    if (!profilesCache.current[userId]) {
+      const profile = await getPublicProfile(token, userId);
+      if (!isActive()) return undefined;
+      profilesCache.current[userId] = profile;
+    }
+    const profile = profilesCache.current[userId];
+    rememberProfile(userId, profile);
+    return profile;
+  };
+
+  const hydrateRoomProfiles = async (roomData: Room, token: string, isActive: () => boolean = () => true) => {
+    const creator = await ensureProfile(token, roomData.creator_id, isActive);
+    if (!creator || !isActive()) return;
+    setCreatorProfile(creator);
+
+    if (roomData.opponent_id) {
+      const opponent = await ensureProfile(token, roomData.opponent_id, isActive);
+      if (!opponent || !isActive()) return;
+      setOpponentProfile(opponent);
+    } else {
+      setOpponentProfile(null);
+    }
+  };
 
   // Carregar dados iniciais da sala e perfis
   useEffect(() => {
     let active = true;
     const token = session?.accessToken;
     if (!token) return;
+    setMessages([]);
+    chatMessageIdsRef.current.clear();
 
     async function loadData() {
       const activeToken = session?.accessToken;
@@ -51,19 +106,10 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
         const roomData = await getRoom(activeToken, roomId);
         if (!active) return;
         setRoom(roomData);
-
-        // Carregar perfil do criador
-        const creator = await getPublicProfile(activeToken, roomData.creator_id);
-        if (!active) return;
-        setCreatorProfile(creator);
-        profilesCache.current[roomData.creator_id] = creator;
-
-        // Carregar perfil do oponente se houver
-        if (roomData.opponent_id) {
-          const opponent = await getPublicProfile(activeToken, roomData.opponent_id);
-          if (!active) return;
-          setOpponentProfile(opponent);
-          profilesCache.current[roomData.opponent_id] = opponent;
+        await hydrateRoomProfiles(roomData, activeToken, () => active);
+        if (roomData.status === "playing") {
+          navigate(`/jogar/${roomData.id}`);
+          return;
         }
       } catch (err) {
         if (active) {
@@ -80,6 +126,54 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
     };
   }, [roomId, session?.accessToken]);
 
+  useEffect(() => {
+    let active = true;
+    const token = session?.accessToken;
+    if (!token) return;
+
+    spectators.forEach((spectator) => {
+      void ensureProfile(token, spectator.user_id, () => active).catch((err) => {
+        console.error("Erro ao carregar perfil do espectador:", err);
+      });
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [spectators, session?.accessToken]);
+
+  useEffect(() => {
+    let active = true;
+    const token = session?.accessToken;
+    if (!token) return;
+
+    onlineUsers.forEach((user) => {
+      void ensureProfile(token, user.user_id, () => active).catch((err) => {
+        console.error("Erro ao carregar perfil online:", err);
+      });
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [onlineUsers, session?.accessToken]);
+
+  useEffect(() => {
+    if (!room) return;
+    setInviteStatuses((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      clearedInvites.forEach((cleared) => {
+        if (cleared.room_id !== room.id) return;
+        if (next[cleared.to_user_id] || Object.values(next).includes(cleared.invitation_id)) {
+          delete next[cleared.to_user_id];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [clearedInvites, room]);
+
   // Conectar WebSocket
   useEffect(() => {
     const token = session?.accessToken;
@@ -90,10 +184,6 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
     const wsUrl = `${protocol}//${window.location.host}/api/v1/rooms/${activeRoomId}/ws?token=${token}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
-
-    ws.onopen = () => {
-      console.log("WebSocket conectado ao Lobby da Sala:", activeRoomId);
-    };
 
     ws.onmessage = async (event) => {
       const currentRoom = roomRef.current;
@@ -117,57 +207,142 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
           senderName = profilesCache.current[senderId]?.nickname ?? "Jogador";
         }
 
+        const rawPayload = wsMsg.payload as unknown;
+        const payload = (rawPayload && typeof rawPayload === "object" ? rawPayload : {}) as RoomEventPayload;
+        const roomFromPayload = rawPayload && typeof rawPayload === "object" && "id" in rawPayload
+          ? (rawPayload as Room)
+          : payload.room;
+        const applyRoomUpdate = async (nextRoom?: Room) => {
+          const updatedRoom = nextRoom ?? await getRoom(token, currentRoom.id);
+          setRoom(updatedRoom);
+          await hydrateRoomProfiles(updatedRoom, token);
+          if (updatedRoom.status === "playing") {
+            navigate(`/jogar/${updatedRoom.id}`);
+          }
+        };
+
         switch (wsMsg.type) {
+          case "room_state":
           case "player_joined":
-            // Recarrega a sala para obter novo oponente se necessário
-            const updatedRoom = await getRoom(token, currentRoom.id);
-            setRoom(updatedRoom);
-            if (updatedRoom.opponent_id && !profilesCache.current[updatedRoom.opponent_id]) {
-              const opp = await getPublicProfile(token, updatedRoom.opponent_id);
-              setOpponentProfile(opp);
-              profilesCache.current[updatedRoom.opponent_id] = opp;
+            setInviteStatuses({});
+            setRematchRequestedBy(new Set());
+            setError(null);
+            await applyRoomUpdate(roomFromPayload);
+            break;
+
+          case "owner_reconnected":
+          case "player_reconnected":
+            setError(null);
+            await applyRoomUpdate(roomFromPayload);
+            break;
+
+          case "owner_disconnected":
+            setRoom((prev) => prev ? { ...prev, creator_disconnected_at: new Date().toISOString() } : prev);
+            break;
+
+          case "player_disconnected":
+            if (senderId !== currentRoom.creator_id) {
+              setOpponentReady(false);
+              setRoom((prev) => prev ? { ...prev, opponent_disconnected_at: new Date().toISOString() } : prev);
             }
             break;
 
           case "player_left":
-            if (senderId === currentRoom.creator_id) {
-              setError("O criador saiu da sala. Esta sala não é mais válida.");
-            } else {
-              setOpponentProfile(null);
+            setInviteStatuses({});
+            setRematchRequestedBy(new Set());
+            await applyRoomUpdate(roomFromPayload);
+            if (senderId !== currentRoom.creator_id) {
               setOpponentReady(false);
-              setRoom((prev) => prev ? { ...prev, opponent_id: undefined } : null);
+            }
+            break;
+
+          case "room_spectators_snapshot":
+            if (rawPayload && typeof rawPayload === "object" && "spectators" in rawPayload) {
+              const snapshot = rawPayload as RoomSpectatorsSnapshot;
+              setSpectators(Array.isArray(snapshot.spectators) ? snapshot.spectators : []);
             }
             break;
 
           case "chat_message":
-            const payload = JSON.parse(JSON.stringify(wsMsg.payload)) as { text: string };
+            const chatText = payload.text;
+            if (!chatText) break;
+            const createdAt = payload.created_at ?? "";
+            const messageId = payload.message_id ?? `${senderId}:${createdAt}:${chatText}`;
+            if (chatMessageIdsRef.current.has(messageId)) break;
+            chatMessageIdsRef.current.add(messageId);
+            const parsedCreatedAt = createdAt ? Date.parse(createdAt) : NaN;
             setMessages((prev) => [
               ...prev,
               {
+                messageId,
                 senderId,
                 senderName,
-                text: payload.text,
-                timestamp: Date.now()
+                text: chatText,
+                timestamp: Number.isNaN(parsedCreatedAt) ? Date.now() : parsedCreatedAt
               }
             ]);
             break;
 
           case "player_ready":
-            const readyPayload = JSON.parse(JSON.stringify(wsMsg.payload)) as { ready: boolean };
+            if (typeof payload.ready !== "boolean") break;
             if (senderId === currentRoom.creator_id) {
-              setCreatorReady(readyPayload.ready);
+              setCreatorReady(payload.ready);
             } else {
-              setOpponentReady(readyPayload.ready);
+              setOpponentReady(payload.ready);
             }
             break;
 
           case "match_start":
+            if (roomFromPayload) {
+              setRoom(roomFromPayload);
+            }
+            setRematchRequestedBy(new Set());
             // Redireciona para o Game Core
-            navigate(`/jogar/${currentRoom.id}`);
+            navigate(`/jogar/${currentRoom.id}`, { isNewMatch: true });
+            break;
+
+          case "match_finished": {
+            const matchPayload = payload as MatchFinishedPayload;
+            if (matchPayload.room) {
+              setRoom(matchPayload.room);
+            }
+            setCreatorReady(false);
+            setOpponentReady(false);
+            setRematchRequestedBy(new Set());
+            navigate(`/sala/${currentRoom.id}`);
+            break;
+          }
+
+          case "rematch_requested": {
+            const rematchPayload = payload as RematchRequestedPayload;
+            const requested = rematchPayload.requested_user_ids?.length
+              ? rematchPayload.requested_user_ids
+              : rematchPayload.user_id
+                ? [rematchPayload.user_id]
+                : [];
+            setRematchRequestedBy((prev) => {
+              const next = new Set(prev);
+              requested.forEach((requestUserId) => next.add(requestUserId));
+              return next;
+            });
+            break;
+          }
+
+          case "room_reset":
+            setCreatorReady(false);
+            setOpponentReady(false);
+            setRematchRequestedBy(new Set());
+            setError(null);
+            await applyRoomUpdate(roomFromPayload);
             break;
 
           case "room_closed":
-            setError("O dono da sala se desconectou. A sala foi encerrada.");
+            setError(payload.reason === "owner_left"
+              ? "O dono saiu da sala. A sala foi encerrada."
+              : payload.reason === "owner_closed"
+                ? "O dono encerrou a sala."
+                : "O dono ficou desconectado por muito tempo. A sala foi encerrada.");
+            navigate("/");
             break;
 
           default:
@@ -176,10 +351,6 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
       } catch (err) {
         console.error("Erro ao processar mensagem WebSocket:", err);
       }
-    };
-
-    ws.onclose = () => {
-      console.log("WebSocket desconectado");
     };
 
     return () => {
@@ -194,7 +365,8 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
 
   const handleSendChat = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!messageText.trim() || !wsRef.current) return;
+    const isParticipant = Boolean(room && (session?.userId === room.creator_id || session?.userId === room.opponent_id));
+    if (!isParticipant || !messageText.trim() || !wsRef.current) return;
 
     const eventMsg = {
       type: "chat_message",
@@ -207,6 +379,8 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
   const handleToggleReady = () => {
     if (!wsRef.current || !room) return;
     const isCreator = session?.userId === room.creator_id;
+    const isOpponent = session?.userId === room.opponent_id;
+    if (!isCreator && !isOpponent) return;
     const currentReady = isCreator ? creatorReady : opponentReady;
     const nextReady = !currentReady;
 
@@ -225,11 +399,63 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
   };
 
   const handleStartMatch = () => {
-    if (!wsRef.current) return;
+    if (!wsRef.current || !room || session?.userId !== room.creator_id) return;
     const eventMsg = {
       type: "match_start"
     };
     wsRef.current.send(JSON.stringify(eventMsg));
+  };
+
+  const handleRequestRematch = () => {
+    if (!wsRef.current || !room) return;
+    const isCreator = session?.userId === room.creator_id;
+    const isOpponent = session?.userId === room.opponent_id;
+    if (!isCreator && !isOpponent) return;
+
+    wsRef.current.send(JSON.stringify({ type: "rematch_request" }));
+    const requestedUserId = session?.userId;
+    if (requestedUserId) {
+      setRematchRequestedBy((prev) => new Set(prev).add(requestedUserId));
+    }
+  };
+
+  const handleCloseRoom = () => {
+    if (!wsRef.current || !room || session?.userId !== room.creator_id) return;
+    wsRef.current.send(JSON.stringify({ type: "room_close_request" }));
+  };
+
+  const handleLeaveRoom = async () => {
+    const token = session?.accessToken;
+    if (!token || !room) {
+      navigate("/");
+      return;
+    }
+
+    const isParticipant = session?.userId === room.creator_id || session?.userId === room.opponent_id;
+    if (!isParticipant) {
+      navigate("/");
+      return;
+    }
+
+    try {
+      await leaveRoom(token, room.id);
+      navigate("/");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao sair da sala.");
+    }
+  };
+
+  const handleInviteUser = async (userId: string) => {
+    const token = session?.accessToken;
+    if (!token || !room) return;
+
+    setInviteStatuses((prev) => ({ ...prev, [userId]: "Enviando..." }));
+    try {
+      const invite = await inviteUser(token, room.id, userId);
+      setInviteStatuses((prev) => ({ ...prev, [userId]: invite.invitation_id }));
+    } catch (err) {
+      setInviteStatuses((prev) => ({ ...prev, [userId]: err instanceof Error ? err.message : "Falha ao convidar" }));
+    }
   };
 
   if (loading) {
@@ -254,7 +480,22 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
 
   const isCreator = session?.userId === room.creator_id;
   const isOpponent = session?.userId === room.opponent_id;
-  const bothReady = creatorReady && opponentReady;
+  const isSpectator = !isCreator && !isOpponent;
+  const creatorDisconnected = Boolean(room.creator_disconnected_at);
+  const opponentDisconnected = Boolean(room.opponent_disconnected_at);
+  const bothReady = !creatorDisconnected && !opponentDisconnected && creatorReady && opponentReady;
+  const canStartMatch = room.status === "waiting" && bothReady;
+  const roomHasInviteSlot = room.status === "waiting" && !room.opponent_id && !creatorDisconnected && !opponentDisconnected;
+  const onlineInviteCandidates = onlineUsers.filter((user) =>
+    user.user_id !== room.creator_id &&
+    user.user_id !== room.opponent_id &&
+    user.user_id !== session?.userId
+  );
+  const isFinished = room.status === "finished";
+  const isPlaying = room.status === "playing";
+  const hasRequestedRematch = Boolean(session?.userId && rematchRequestedBy.has(session.userId));
+  const creatorRequestedRematch = rematchRequestedBy.has(room.creator_id);
+  const opponentRequestedRematch = Boolean(room.opponent_id && rematchRequestedBy.has(room.opponent_id));
 
   return (
     <main className="min-h-screen bg-neutral-950 p-6 text-white">
@@ -267,7 +508,9 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
               {room.is_private ? "Mesa Privada" : "Mesa Pública"}
             </span>
             <h1 className="mt-1 text-3xl font-bold tracking-tight">Sala de Espera</h1>
-            <p className="text-sm text-neutral-500 mt-1">ID da partida: {room.id}</p>
+            <p className="text-sm text-neutral-500 mt-1">
+              ID da partida: {room.id}{isSpectator ? " • Assistindo" : ""}
+            </p>
           </div>
           {room.code && (
             <div className="rounded-lg border border-white/10 bg-white/5 p-4 backdrop-blur-sm md:text-right">
@@ -306,10 +549,16 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
               <div className="mt-8 flex items-center justify-between">
                 <span className="text-xs text-neutral-500 uppercase tracking-wider">Estado</span>
                 <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${
-                  creatorReady ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-500/10 text-amber-400"
+                  creatorDisconnected
+                    ? "bg-sky-500/10 text-sky-300"
+                    : creatorReady
+                      ? "bg-emerald-500/10 text-emerald-400"
+                      : "bg-amber-500/10 text-amber-400"
                 }`}>
-                  <span className={`h-1.5 w-1.5 rounded-full ${creatorReady ? "bg-emerald-400" : "bg-amber-400"}`} />
-                  {creatorReady ? "Pronto" : "Aguardando"}
+                  <span className={`h-1.5 w-1.5 rounded-full ${
+                    creatorDisconnected ? "bg-sky-300" : creatorReady ? "bg-emerald-400" : "bg-amber-400"
+                  }`} />
+                  {creatorDisconnected ? "Reconectando" : creatorReady ? "Pronto" : "Aguardando"}
                 </span>
               </div>
             </div>
@@ -339,10 +588,16 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
                   <div className="mt-8 flex items-center justify-between">
                     <span className="text-xs text-neutral-500 uppercase tracking-wider">Estado</span>
                     <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${
-                      opponentReady ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-500/10 text-amber-400"
+                      opponentDisconnected
+                        ? "bg-sky-500/10 text-sky-300"
+                        : opponentReady
+                          ? "bg-emerald-500/10 text-emerald-400"
+                          : "bg-amber-500/10 text-amber-400"
                     }`}>
-                      <span className={`h-1.5 w-1.5 rounded-full ${opponentReady ? "bg-emerald-400" : "bg-amber-400"}`} />
-                      {opponentReady ? "Pronto" : "Aguardando"}
+                      <span className={`h-1.5 w-1.5 rounded-full ${
+                        opponentDisconnected ? "bg-sky-300" : opponentReady ? "bg-emerald-400" : "bg-amber-400"
+                      }`} />
+                      {opponentDisconnected ? "Reconectando" : opponentReady ? "Pronto" : "Aguardando"}
                     </span>
                   </div>
                 </>
@@ -375,8 +630,8 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
                   Diga olá no chat da partida!
                 </div>
               ) : (
-                messages.map((msg, i) => (
-                  <div key={i} className={`flex flex-col ${msg.senderId === session?.userId ? "items-end" : "items-start"}`}>
+                messages.map((msg) => (
+                  <div key={msg.messageId} className={`flex flex-col ${msg.senderId === session?.userId ? "items-end" : "items-start"}`}>
                     <span className="text-[10px] text-neutral-500 mb-0.5 px-1">{msg.senderName}</span>
                     <div className={`px-3 py-1.5 rounded-lg text-sm max-w-[85%] break-words ${
                       msg.senderId === session?.userId ? "bg-emerald-600 text-white rounded-tr-none" : "bg-white/10 text-neutral-200 rounded-tl-none"
@@ -395,12 +650,13 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
                 type="text"
                 value={messageText}
                 onChange={(e) => setMessageText(e.target.value)}
-                placeholder="Escreva uma mensagem..."
+                disabled={isSpectator}
+                placeholder={isSpectator ? "Espectadores apenas assistem ao chat" : "Escreva uma mensagem..."}
                 className="flex-1 rounded-lg bg-neutral-900 border border-white/10 px-3 py-1.5 text-sm placeholder-neutral-500 focus:outline-none focus:border-emerald-500 text-white"
               />
               <button
                 type="submit"
-                disabled={!messageText.trim()}
+                disabled={isSpectator || !messageText.trim()}
                 className="rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-neutral-800 disabled:text-neutral-600 px-3 text-sm font-semibold transition"
               >
                 Enviar
@@ -411,14 +667,137 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
         </div>
 
         {/* Rodapé de Ações */}
+        <div className="mt-6 grid gap-6 md:grid-cols-2">
+          <section className="rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur-md">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-300">Espectadores</h2>
+              <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-neutral-400">{spectators.length}</span>
+            </div>
+            <div className="mt-4 space-y-2">
+              {spectators.length === 0 ? (
+                <p className="text-xs text-neutral-600">Ninguem assistindo no momento.</p>
+              ) : (
+                spectators.map((spectator) => (
+                  <div key={spectator.user_id} className="flex items-center gap-3 rounded-lg bg-white/5 px-3 py-2">
+                    {profilesById[spectator.user_id]?.photo_url ? (
+                      <img
+                        src={profilesById[spectator.user_id]?.photo_url}
+                        alt={profilesById[spectator.user_id]?.nickname ?? "Espectador"}
+                        className="h-8 w-8 rounded-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-neutral-800 text-xs font-semibold text-neutral-300">
+                        {(profilesById[spectator.user_id]?.nickname ?? "ES").substring(0, 2).toUpperCase()}
+                      </div>
+                    )}
+                    <span className="text-sm text-neutral-200">{profilesById[spectator.user_id]?.nickname ?? "Carregando..."}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+
+          {isCreator && (
+            <section className="rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur-md">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-300">Jogadores online</h2>
+                <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-neutral-400">{onlineInviteCandidates.length}</span>
+              </div>
+              <div className="mt-4 space-y-2">
+                {onlineInviteCandidates.length === 0 ? (
+                  <p className="text-xs text-neutral-600">Nenhum jogador online disponivel para convite.</p>
+                ) : (
+                  onlineInviteCandidates.map((user) => {
+                    const status = inviteStatuses[user.user_id];
+                    const wasInvited = Boolean(status && status !== "Enviando..." && !status.startsWith("Falha") && !status.startsWith("Usuario"));
+                    return (
+                      <div key={user.user_id} className="flex items-center justify-between gap-3 rounded-lg bg-white/5 px-3 py-2">
+                        <div className="flex min-w-0 items-center gap-3">
+                          {profilesById[user.user_id]?.photo_url ? (
+                            <img
+                              src={profilesById[user.user_id]?.photo_url}
+                              alt={profilesById[user.user_id]?.nickname ?? "Jogador"}
+                              className="h-8 w-8 rounded-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-neutral-800 text-xs font-semibold text-neutral-300">
+                              {(profilesById[user.user_id]?.nickname ?? "ON").substring(0, 2).toUpperCase()}
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <p className="truncate text-sm text-neutral-200">{profilesById[user.user_id]?.nickname ?? "Carregando..."}</p>
+                            {status && !wasInvited && status !== "Enviando..." && (
+                              <p className="truncate text-[10px] text-red-300">{status}</p>
+                            )}
+                          </div>
+                        </div>
+                        <Button
+                          onClick={() => handleInviteUser(user.user_id)}
+                          disabled={!roomHasInviteSlot || status === "Enviando..." || wasInvited}
+                          variant="outline"
+                          className="px-3 py-1.5 text-xs"
+                        >
+                          {status === "Enviando..." ? "Enviando" : wasInvited ? "Convidado" : "Convidar"}
+                        </Button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+          )}
+        </div>
+
+        {isFinished && (
+          <section className="mt-6 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm text-emerald-100">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <span>Partida finalizada. A sala continua aberta para revanche.</span>
+              <span className="text-xs text-emerald-200">
+                Dono: {creatorRequestedRematch ? "revanche solicitada" : "aguardando"} • Oponente: {opponentRequestedRematch ? "revanche solicitada" : "aguardando"}
+              </span>
+            </div>
+          </section>
+        )}
+
         <footer className="mt-8 flex flex-col sm:flex-row gap-3 justify-end border-t border-white/10 pt-6">
-          <Button onClick={() => navigate("/")} variant="outline" className="sm:order-1">
+          <Button onClick={handleLeaveRoom} variant="outline" className="sm:order-1">
             Sair da Sala
           </Button>
 
-          {(isCreator || isOpponent) && (
+          {isPlaying && (
+            <Button
+              onClick={() => navigate(`/jogar/${room.id}`)}
+              className="sm:order-2 bg-emerald-600 hover:bg-emerald-500 text-white"
+            >
+              Voltar ao Jogo
+            </Button>
+          )}
+
+          {isFinished && (isCreator || isOpponent) && (
+            <Button
+              onClick={handleRequestRematch}
+              disabled={hasRequestedRematch}
+              variant={hasRequestedRematch ? "outline" : "solid"}
+              className="sm:order-2"
+            >
+              {hasRequestedRematch ? "Revanche solicitada" : "Pedir Revanche"}
+            </Button>
+          )}
+
+          {isFinished && isCreator && (
+            <Button
+              onClick={handleCloseRoom}
+              variant="outline"
+              className="sm:order-3"
+            >
+              Encerrar Sala
+            </Button>
+          )}
+
+          {!isFinished && !isPlaying && (isCreator || isOpponent) && (
             <Button
               onClick={handleToggleReady}
+              disabled={isCreator ? creatorDisconnected : opponentDisconnected}
               variant={isCreator ? (creatorReady ? "outline" : "solid") : (opponentReady ? "outline" : "solid")}
               className="sm:order-2"
             >
@@ -426,10 +805,10 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
             </Button>
           )}
 
-          {isCreator && (
+          {!isFinished && !isPlaying && isCreator && (
             <Button
               onClick={handleStartMatch}
-              disabled={!bothReady}
+              disabled={!canStartMatch}
               className="sm:order-3 bg-emerald-600 hover:bg-emerald-500 text-white"
             >
               Começar Jogo

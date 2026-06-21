@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, type ReactNode } from "react";
 import * as authApi from "./authApi";
 import { sessionFromAccessToken } from "./token";
-import type { AuthResponse, AuthSession, LoginPayload, SignupPayload } from "./types";
+import { AuthApiError, type AuthResponse, type AuthSession, type LoginPayload, type SignupPayload } from "./types";
 
 type AuthState =
   | { phase: "checking"; session: null; error: string | null }
@@ -85,8 +85,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         type: "AUTHENTICATED",
         session: sessionFromAccessToken(response.access_token)
       });
-    } catch {
-      dispatch({ type: "ANONYMOUS" });
+    } catch (err) {
+      if (err instanceof AuthApiError) {
+        dispatch({ type: "ANONYMOUS" });
+      } else {
+        console.warn("Falha de rede ao renovar sessao, mantendo sessao atual e tentando em 10s:", err);
+        setTimeout(() => {
+          refreshSession();
+        }, 10000);
+      }
     }
   }, []);
 

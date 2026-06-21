@@ -11,8 +11,8 @@ export default defineConfig(({ mode }) => {
   const authProxyTarget = resolveAuthProxyTarget(rootEnv);
   const profileApiOrigin = resolveClientProfileOrigin(rootEnv);
   const profileProxyTarget = resolveProfileProxyTarget(rootEnv);
-  const lobbyApiOrigin = resolveClientLobbyOrigin(rootEnv);
-  const lobbyProxyTarget = resolveLobbyProxyTarget(rootEnv);
+  const lobbyApiOrigin = resolveClientGameOrigin(rootEnv);
+  const lobbyProxyTarget = resolveGameProxyTarget(rootEnv);
   const storageProxyTarget = resolveStorageProxyTarget(rootEnv);
   const googleClientId = rootEnv.VITE_GOOGLE_CLIENT_ID || rootEnv.GOOGLE_CLIENT_ID || "";
 
@@ -25,11 +25,19 @@ export default defineConfig(({ mode }) => {
       __LOBBY_API_ORIGIN__: JSON.stringify(lobbyApiOrigin),
       __GOOGLE_CLIENT_ID__: JSON.stringify(googleClientId)
     },
+    build: {
+      chunkSizeWarningLimit: 1000
+    },
     server: {
       port: 3000,
       allowedHosts: true,
       proxy: {
         "/api/v1/rooms": {
+          target: lobbyProxyTarget,
+          changeOrigin: true,
+          ws: true
+        },
+        "/api/v1/notifications": {
           target: lobbyProxyTarget,
           changeOrigin: true,
           ws: true
@@ -75,7 +83,15 @@ function resolveClientProfileOrigin(env) {
   return "/api";
 }
 
-function resolveClientLobbyOrigin(env) {
+function resolveClientGameOrigin(env) {
+  if (env.VITE_GAME_API_ORIGIN) {
+    return env.VITE_GAME_API_ORIGIN;
+  }
+
+  if (env.GAME_API_ORIGIN?.startsWith("/")) {
+    return env.GAME_API_ORIGIN;
+  }
+
   if (env.VITE_LOBBY_API_ORIGIN) {
     return env.VITE_LOBBY_API_ORIGIN;
   }
@@ -97,8 +113,13 @@ function resolveProfileProxyTarget(env) {
   return target.replace(/\/api(?:\/v1\/profiles)?\/?$/, "");
 }
 
-function resolveLobbyProxyTarget(env) {
-  const target = env.VITE_LOBBY_PROXY_TARGET || (!env.LOBBY_API_ORIGIN?.startsWith("/") ? env.LOBBY_API_ORIGIN : "") || "http://localhost:8083";
+function resolveGameProxyTarget(env) {
+  const target =
+    env.VITE_GAME_PROXY_TARGET ||
+    (!env.GAME_API_ORIGIN?.startsWith("/") ? env.GAME_API_ORIGIN : "") ||
+    env.VITE_LOBBY_PROXY_TARGET ||
+    (!env.LOBBY_API_ORIGIN?.startsWith("/") ? env.LOBBY_API_ORIGIN : "") ||
+    "http://localhost:8083";
   return target.replace(/\/api(?:\/v1\/rooms)?\/?$/, "");
 }
 

@@ -6,11 +6,11 @@ function notify() {
   listeners.forEach((listener) => listener());
 }
 
-export function navigate(path: string) {
+export function navigate(path: string, state: any = null) {
   if (window.location.pathname === path) {
     return;
   }
-  window.history.pushState(null, "", path);
+  window.history.pushState(state, "", path);
   notify();
 }
 

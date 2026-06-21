@@ -3,7 +3,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { Button } from "../components/Button";
 import { navigate } from "../lib/router";
 import { createRoom, listPublicRooms, joinRoom } from "../lobby/lobbyApi";
-import type { Room } from "../lobby/types";
+import type { Room, WSEvent } from "../lobby/types";
 import { getMyProfile, getPublicProfile } from "../profile/profileApi";
 import type { Profile } from "../profile/types";
 
@@ -33,41 +33,70 @@ export function HomePage() {
       .catch((err) => console.error("Erro ao buscar perfil:", err));
 
     // Obter salas públicas iniciais
-    fetchRooms(token, active);
+    fetchRooms(token);
 
-    // Polling de salas públicas a cada 7 segundos
-    const interval = setInterval(() => {
-      fetchRooms(token, active);
-    }, 7000);
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connectRoomsWS = () => {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${protocol}//${window.location.host}/api/v1/rooms/public/ws?token=${token}`);
+
+      ws.onmessage = (event) => {
+        try {
+          const wsMsg = JSON.parse(event.data) as WSEvent<Room[]>;
+          if (!active || wsMsg.type !== "public_rooms_snapshot" || !Array.isArray(wsMsg.payload)) return;
+          setRooms(wsMsg.payload);
+        } catch (err) {
+          console.error("Erro ao processar salas em tempo real:", err);
+        }
+      };
+
+      ws.onclose = () => {
+        if (!active) return;
+        reconnectTimer = setTimeout(connectRoomsWS, 2000);
+      };
+    };
+
+    connectRoomsWS();
 
     return () => {
       active = false;
-      clearInterval(interval);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      ws?.close();
     };
   }, [session?.accessToken]);
 
-  const fetchRooms = async (token: string, active: boolean) => {
+  useEffect(() => {
+    let active = true;
+    const token = session?.accessToken;
+    if (!token) return;
+
+    rooms.forEach(async (room) => {
+      if (roomCreatorNames[room.creator_id]) return;
+
+      try {
+        const creator = await getPublicProfile(token, room.creator_id);
+        if (!active) return;
+
+        setRoomCreatorNames((prev) => ({
+          ...prev,
+          [room.creator_id]: creator.nickname
+        }));
+      } catch (err) {
+        console.error("Erro ao buscar apelido do criador:", err);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [rooms, roomCreatorNames, session?.accessToken]);
+
+  const fetchRooms = async (token: string) => {
     try {
       const publicRooms = await listPublicRooms(token);
-      if (!active) return;
       setRooms(publicRooms);
-
-      // Carregar nomes dos criadores das salas públicas em background
-      publicRooms.forEach(async (room) => {
-        if (!roomCreatorNames[room.creator_id]) {
-          try {
-            const creator = await getPublicProfile(token, room.creator_id);
-            if (active) {
-              setRoomCreatorNames((prev) => ({
-                ...prev,
-                [room.creator_id]: creator.nickname
-              }));
-            }
-          } catch (err) {
-            console.error("Erro ao buscar apelido do criador:", err);
-          }
-        }
-      });
     } catch (err) {
       console.error("Erro ao carregar salas públicas:", err);
     }
@@ -125,6 +154,10 @@ export function HomePage() {
     } catch (err) {
       setLobbyError(err instanceof Error ? err.message : "Falha ao entrar na sala pública.");
     }
+  };
+
+  const handleWatchPublicRoom = (roomId: string) => {
+    navigate(`/sala/${roomId}`);
   };
 
   return (
@@ -220,8 +253,11 @@ export function HomePage() {
                 <h2 className="text-lg font-semibold">Mesas Públicas</h2>
                 <p className="text-xs text-neutral-400">Jogue com outras pessoas da comunidade.</p>
               </div>
-              <button 
-                onClick={() => fetchRooms(session?.accessToken ?? "", true)} 
+              <button
+                onClick={() => {
+                  const token = session?.accessToken;
+                  if (token) fetchRooms(token);
+                }}
                 className="text-xs text-emerald-400 hover:text-emerald-300 font-medium"
               >
                 Atualizar
@@ -237,15 +273,54 @@ export function HomePage() {
               ) : (
                 rooms.map((room) => {
                   const creatorName = roomCreatorNames[room.creator_id] ?? "Carregando...";
+                  const creatorDisconnected = Boolean(room.creator_disconnected_at);
+                  const opponentDisconnected = Boolean(room.opponent_disconnected_at);
+                  const hasReconnectWindow = creatorDisconnected || opponentDisconnected;
+                  const canPlay = !hasReconnectWindow && room.status === "waiting" && !room.opponent_id;
+                  const canReconnect = (creatorDisconnected && session?.userId === room.creator_id)
+                    || (opponentDisconnected && session?.userId === room.opponent_id);
+                  let roomStatus = "Mesa completa";
+                  if (creatorDisconnected && opponentDisconnected) {
+                    roomStatus = "Jogadores reconectando";
+                  } else if (creatorDisconnected) {
+                    roomStatus = "Dono reconectando";
+                  } else if (opponentDisconnected) {
+                    roomStatus = "Oponente reconectando";
+                  } else if (room.status === "playing") {
+                    roomStatus = "Em partida";
+                  } else if (room.status === "finished") {
+                    roomStatus = "Aguardando revanche";
+                  } else if (canPlay) {
+                    roomStatus = "Aguardando jogador";
+                  }
                   return (
-                    <div key={room.id} className="flex items-center justify-between p-4 rounded-lg bg-white/5 border border-white/5 hover:border-white/10 transition">
+                    <div key={room.id} className="flex items-center justify-between gap-3 p-4 rounded-lg bg-white/5 border border-white/5 hover:border-white/10 transition">
                       <div>
                         <span className="text-xs text-neutral-400 uppercase tracking-wider block">Mesa de</span>
                         <strong className="text-sm font-semibold">{creatorName}</strong>
+                        <span className="mt-1 block text-[10px] uppercase tracking-wider text-neutral-500">{roomStatus}</span>
                       </div>
-                      <Button onClick={() => handleJoinPublicRoom(room.id)} variant="outline" className="px-4 py-1.5 text-xs">
-                        Jogar
-                      </Button>
+                      <div className="flex shrink-0 gap-2">
+                        {canReconnect ? (
+                          <Button onClick={() => handleWatchPublicRoom(room.id)} variant="outline" className="px-3 py-1.5 text-xs">
+                            Reconectar
+                          </Button>
+                        ) : (
+                          <Button
+                            onClick={() => handleJoinPublicRoom(room.id)}
+                            disabled={!canPlay}
+                            variant="outline"
+                            className="px-3 py-1.5 text-xs"
+                          >
+                            Jogar
+                          </Button>
+                        )}
+                        {!canReconnect && (
+                          <Button onClick={() => handleWatchPublicRoom(room.id)} variant="outline" className="px-3 py-1.5 text-xs">
+                            Assistir
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   );
                 })

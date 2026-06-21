@@ -51,6 +51,11 @@ func NewServer(cfg *config.Config, db *pgxpool.Pool) (*Server, error) {
 	tokenValidator := profileauth.NewTokenValidator(cfg.JWTSecret)
 	v1 := router.Group("/api/v1")
 	{
+		internal := v1.Group("/internal", internalAPIKeyMiddleware(cfg.InternalAPIKey))
+		{
+			internal.POST("/profiles/xp/match", handler.AwardMatchXP)
+		}
+
 		profiles := v1.Group("/profiles", profileauth.Middleware(tokenValidator))
 		{
 			profiles.GET("/me", handler.GetMe)
@@ -116,6 +121,21 @@ func CORSMiddleware(allowedOrigins string) gin.HandlerFunc {
 			return
 		}
 
+		c.Next()
+	}
+}
+
+func internalAPIKeyMiddleware(expectedKey string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if expectedKey == "" || c.GetHeader("X-Internal-API-Key") != expectedKey {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": gin.H{
+					"code":    "UNAUTHORIZED",
+					"message": "Invalid internal API key",
+				},
+			})
+			return
+		}
 		c.Next()
 	}
 }

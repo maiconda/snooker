@@ -45,3 +45,11 @@ Abaixo está o índice das decisões arquiteturais tomadas:
    - *Resumo:* Implementação de salas públicas pré-configuradas em painel geral para entrada direta, combinadas com criação dinâmica de salas privadas acessadas de forma exclusiva por códigos pseudo-aleatórios de convite de 6 caracteres.
 6. **[ADR 0006: Fluxo de Autenticação e Onboarding de Usuário (OAuth, Presigned URLs e JWT)](file:///c:/Users/maico/OneDrive/Área%20de%20Trabalho/snooker/docs/adr/0006-fluxo-autenticacao-onboarding.md)**
    - *Resumo:* Detalhamento do fluxo seguro e de alta performance para criação de contas (Google OAuth via JWKS local ou Email/Senha), upload de imagem de perfil direto para MinIO/S3 via Presigned URLs e gerenciamento de sessão stateless com JWT.
+7. **[ADR 0007: Isolamento do Auth Service na raiz](file:///c:/Users/maico/OneDrive/Área%20de%20Trabalho/snooker/docs/adr/0007-auth-service-root-isolation.md)**
+   - *Resumo:* Formaliza o auth como servico de raiz independente, com entrypoint, Dockerfile, container e ownership de dados proprios.
+8. **[ADR 0008: Gameplay state, deterministic physics, and spectator playback](file:///c:/Users/maico/OneDrive/Área%20de%20Trabalho/snooker/docs/adr/0008-gameplay-state-physics-spectators.md)**
+   - *Resumo:* Define o servidor como autoridade de eventos e snapshots, mantendo fisica deterministica client-side, commit por consenso, replay server-side sob demanda e playback fluido para espectadores.
+
+## Gameplay
+
+- [Gameplay state and physics architecture](file:///c:/Users/maico/OneDrive/Área%20de%20Trabalho/snooker/docs/gameplay-state-and-physics.md)

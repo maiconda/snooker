@@ -70,3 +70,18 @@ type CompleteProfileResponse struct {
 	AccessToken string   `json:"access_token"`
 	Status      string   `json:"status"`
 }
+
+type MatchXPRequest struct {
+	WinnerUserID       uuid.UUID   `json:"winner_user_id"`
+	ParticipantUserIDs []uuid.UUID `json:"participant_user_ids"`
+}
+
+type XPAward struct {
+	UserID  uuid.UUID `json:"user_id"`
+	XPDelta int       `json:"xp_delta"`
+	TotalXP int       `json:"total_xp"`
+}
+
+type MatchXPResponse struct {
+	Awards []XPAward `json:"awards"`
+}

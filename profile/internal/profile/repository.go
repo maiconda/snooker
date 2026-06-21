@@ -15,6 +15,7 @@ var (
 
 type Repository interface {
 	FindByUserID(ctx context.Context, userID uuid.UUID) (*Profile, error)
+	IncrementXP(ctx context.Context, userID uuid.UUID, delta int) (*Profile, error)
 	Upsert(ctx context.Context, p *Profile) (*Profile, error)
 	Update(ctx context.Context, p *Profile) (*Profile, error)
 

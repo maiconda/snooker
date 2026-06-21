@@ -153,6 +153,10 @@ export function ProfilePage() {
   }
 
   const previewImage = imageUrl ?? profile?.photo_url ?? "";
+  const totalXP = profile?.xp ?? 0;
+  const level = Math.floor(totalXP / 100) + 1;
+  const nextLevelXP = level * 100;
+  const levelProgress = totalXP % 100;
 
   return (
     <main className="min-h-screen bg-neutral-950 text-white">
@@ -194,7 +198,16 @@ export function ProfilePage() {
             <div className="mt-4 border-t border-white/10 pt-4">
               <p className="text-sm font-medium text-white">{nickname || "nickname"}</p>
               <p className="mt-1 min-h-10 text-sm text-neutral-400">{bio || "bio"}</p>
-              <p className="mt-4 text-sm text-neutral-500">XP {profile?.xp ?? 0}</p>
+              <div className="mt-4 border border-white/10 bg-white/5 p-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-semibold text-white">Nivel {level}</span>
+                  <span className="text-neutral-400">{totalXP} XP</span>
+                </div>
+                <div className="mt-3 h-2 bg-neutral-800">
+                  <div className="h-full bg-emerald-400" style={{ width: `${levelProgress}%` }} />
+                </div>
+                <p className="mt-2 text-xs text-neutral-500">{nextLevelXP - totalXP} XP para o proximo nivel</p>
+              </div>
             </div>
           </aside>
 

@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	uploadURLTTLSeconds = 300
-	maxBioLength        = 200
+	uploadURLTTLSeconds  = 300
+	maxBioLength         = 200
+	matchParticipationXP = 25
+	matchWinnerBonusXP   = 25
 )
 
 var nicknamePattern = regexp.MustCompile(`^[A-Za-z0-9_]{3,24}$`)
@@ -152,6 +154,47 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, req *Upda
 	current.PhotoURL = photoURL
 
 	return s.repo.Update(ctx, current)
+}
+
+func (s *Service) AwardMatchXP(ctx context.Context, req *MatchXPRequest) (*MatchXPResponse, error) {
+	participantIDs := uniqueUUIDs(req.ParticipantUserIDs)
+	awards := make([]XPAward, 0, len(participantIDs))
+
+	for _, participantID := range participantIDs {
+		delta := matchParticipationXP
+		if participantID == req.WinnerUserID {
+			delta += matchWinnerBonusXP
+		}
+
+		profile, err := s.repo.IncrementXP(ctx, participantID, delta)
+		if err != nil {
+			return nil, err
+		}
+
+		awards = append(awards, XPAward{
+			UserID:  participantID,
+			XPDelta: delta,
+			TotalXP: profile.XP,
+		})
+	}
+
+	return &MatchXPResponse{Awards: awards}, nil
+}
+
+func uniqueUUIDs(values []uuid.UUID) []uuid.UUID {
+	seen := make(map[uuid.UUID]struct{}, len(values))
+	result := make([]uuid.UUID, 0, len(values))
+	for _, value := range values {
+		if value == uuid.Nil {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func (s *Service) consumePhotoUpload(ctx context.Context, userID uuid.UUID, uploadID uuid.UUID) (objectKey string, photoURL string, err error) {

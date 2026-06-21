@@ -134,6 +134,23 @@ func (h *Handler) Update(c *gin.Context) {
 	c.JSON(http.StatusOK, p)
 }
 
+func (h *Handler) AwardMatchXP(c *gin.Context) {
+	var req MatchXPRequest
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.ParticipantUserIDs) == 0 {
+		c.JSON(http.StatusBadRequest, httpx.ErrorResponse{
+			Error: httpx.ErrorDetail{Code: httpx.ErrCodeValidationFailed, Message: "Invalid request body"},
+		})
+		return
+	}
+
+	resp, err := h.service.AwardMatchXP(c.Request.Context(), &req)
+	if err != nil {
+		handleProfileError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
 func handleProfileError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):

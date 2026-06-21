@@ -22,7 +22,11 @@ type Server struct {
 
 func NewServer(cfg *config.Config, db *pgxpool.Pool) (*Server, error) {
 	repo := lobby.NewRepository(db)
-	handler := lobby.NewHandler(repo)
+	handler := lobby.NewHandler(
+		repo,
+		lobby.WithOwnerDisconnectTimeout(cfg.OwnerDisconnectTimeout),
+		lobby.WithMatchXPAwarder(lobby.NewProfileXPClient(cfg.ProfileInternalURL, cfg.InternalAPIKey)),
+	)
 
 	router := gin.Default()
 	router.Use(CORSMiddleware(cfg.AllowedOrigins))
@@ -38,7 +42,7 @@ func NewServer(cfg *config.Config, db *pgxpool.Pool) (*Server, error) {
 	router.GET("/health/ready", s.Ready)
 
 	tokenValidator := lobbyauth.NewTokenValidator(cfg.JWTSecret)
-	
+
 	v1 := router.Group("/api/v1")
 	{
 		// Endpoints protegidos por JWT
@@ -46,9 +50,18 @@ func NewServer(cfg *config.Config, db *pgxpool.Pool) (*Server, error) {
 		{
 			rooms.POST("", handler.CreateRoom)
 			rooms.GET("/public", handler.ListPublicRooms)
+			rooms.GET("/public/ws", handler.HandlePublicRoomsWS)
 			rooms.GET("/:code_or_id", handler.GetRoom)
 			rooms.POST("/:code_or_id/join", handler.JoinRoom)
+			rooms.POST("/:code_or_id/leave", handler.LeaveRoom)
+			rooms.POST("/:code_or_id/invite", handler.InviteUser)
 			rooms.GET("/:code_or_id/ws", handler.HandleWS)
+		}
+
+		notifications := v1.Group("/notifications", lobbyauth.Middleware(tokenValidator))
+		{
+			notifications.GET("/ws", handler.HandleNotificationsWS)
+			notifications.POST("/invites/:invitation_id/decline", handler.DeclineInvite)
 		}
 	}
 
@@ -57,13 +70,13 @@ func NewServer(cfg *config.Config, db *pgxpool.Pool) (*Server, error) {
 
 func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%s", s.cfg.Port)
-	fmt.Printf("lobby service rodando em http://localhost%s\n", addr)
+	fmt.Printf("game service rodando em http://localhost%s\n", addr)
 	return s.router.Run(addr)
 }
 
 func (s *Server) Live(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"service":   "lobby",
+		"service":   "game",
 		"status":    "UP",
 		"timestamp": time.Now().Format(time.RFC3339),
 	})
@@ -75,7 +88,7 @@ func (s *Server) Ready(c *gin.Context) {
 
 	if err := s.db.Ping(ctx); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"service": "lobby",
+			"service": "game",
 			"status":  "DOWN",
 			"error":   "database unavailable",
 		})
@@ -83,7 +96,7 @@ func (s *Server) Ready(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"service": "lobby",
+		"service": "game",
 		"status":  "READY",
 	})
 }

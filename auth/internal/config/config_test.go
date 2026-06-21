@@ -28,11 +28,31 @@ func TestLoad_DefaultValues(t *testing.T) {
 		os.Unsetenv("JWT_SECRET")
 		os.Unsetenv("GOOGLE_CLIENT_ID")
 		// Restaura variaveis de ambiente originais
-		if origDBHost != "" { os.Setenv("DB_HOST", origDBHost) } else { os.Unsetenv("DB_HOST") }
-		if origDBPort != "" { os.Setenv("DB_PORT", origDBPort) } else { os.Unsetenv("DB_PORT") }
-		if origDBUser != "" { os.Setenv("DB_USER", origDBUser) } else { os.Unsetenv("DB_USER") }
-		if origDBName != "" { os.Setenv("DB_NAME", origDBName) } else { os.Unsetenv("DB_NAME") }
-		if origDBSSLMode != "" { os.Setenv("DB_SSLMODE", origDBSSLMode) } else { os.Unsetenv("DB_SSLMODE") }
+		if origDBHost != "" {
+			os.Setenv("DB_HOST", origDBHost)
+		} else {
+			os.Unsetenv("DB_HOST")
+		}
+		if origDBPort != "" {
+			os.Setenv("DB_PORT", origDBPort)
+		} else {
+			os.Unsetenv("DB_PORT")
+		}
+		if origDBUser != "" {
+			os.Setenv("DB_USER", origDBUser)
+		} else {
+			os.Unsetenv("DB_USER")
+		}
+		if origDBName != "" {
+			os.Setenv("DB_NAME", origDBName)
+		} else {
+			os.Unsetenv("DB_NAME")
+		}
+		if origDBSSLMode != "" {
+			os.Setenv("DB_SSLMODE", origDBSSLMode)
+		} else {
+			os.Unsetenv("DB_SSLMODE")
+		}
 	}()
 
 	cfg, err := Load()

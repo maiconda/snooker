@@ -18,12 +18,11 @@ services:
       retries: 5
 
   auth:
-    image: golang:1.25-alpine
+    build:
+      context: .
+      dockerfile: auth/Dockerfile
     container_name: snooker-auth
     restart: always
-    volumes:
-      - .:/app
-    working_dir: /app
     ports:
       - "${AUTH_PORT:-8081}:8080"
     environment:
@@ -42,9 +41,8 @@ services:
     depends_on:
       auth-postgres:
         condition: service_healthy
-    command: go run auth/cmd/auth/main.go
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/ready || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health/ready || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -55,7 +53,7 @@ services:
     container_name: snooker-profile-postgres
     restart: always
     environment:
-      POSTGRES_DB: ${PROFILE_DB_NAME:-snooker_profile}
+      POSTGRES_DB: ${PROFILE_DB_NAME:-snooker_game}
       POSTGRES_USER: ${PROFILE_DB_USER:-postgres}
       POSTGRES_PASSWORD: ${PROFILE_DB_PASSWORD:-postgres}
     ports:
@@ -63,10 +61,26 @@ services:
     volumes:
       - profile_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PROFILE_DB_USER:-postgres} -d ${PROFILE_DB_NAME:-snooker_profile}"]
+      test: ["CMD-SHELL", "pg_isready -U ${PROFILE_DB_USER:-postgres} -d ${PROFILE_DB_NAME:-snooker_game}"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  profile-db-init:
+    image: postgres:15-alpine
+    container_name: snooker-profile-db-init
+    depends_on:
+      profile-postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${PROFILE_DB_PASSWORD:-postgres}
+      PROFILE_DB_NAME: ${PROFILE_DB_NAME:-snooker_game}
+      PROFILE_LEGACY_DB_NAME: ${PROFILE_LEGACY_DB_NAME:-snooker_profile}
+      PROFILE_DB_USER: ${PROFILE_DB_USER:-postgres}
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-http://localhost:9005/snooker-profiles}
+    volumes:
+      - ./profile/scripts:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/init-profile-db.sh"]
 
   minio:
     image: minio/minio:latest
@@ -101,12 +115,11 @@ services:
       mc anonymous set download local/${STORAGE_BUCKET_NAME:-snooker-profiles}"
 
   profile:
-    image: golang:1.25-alpine
+    build:
+      context: .
+      dockerfile: profile/Dockerfile
     container_name: snooker-profile
     restart: always
-    volumes:
-      - .:/app
-    working_dir: /app
     ports:
       - "${PROFILE_PORT:-8082}:8080"
     environment:
@@ -119,7 +132,7 @@ services:
       - DB_PORT=5432
       - DB_USER=${PROFILE_DB_USER:-postgres}
       - DB_PASSWORD=${PROFILE_DB_PASSWORD:-postgres}
-      - DB_NAME=${PROFILE_DB_NAME:-snooker_profile}
+      - DB_NAME=${PROFILE_DB_NAME:-snooker_game}
       - DB_SSLMODE=disable
       - STORAGE_ENDPOINT=minio:9000
       - STORAGE_PUBLIC_BASE_URL=${STORAGE_PUBLIC_BASE_URL:-http://localhost:9005/snooker-profiles}
@@ -132,13 +145,14 @@ services:
     depends_on:
       profile-postgres:
         condition: service_healthy
+      profile-db-init:
+        condition: service_completed_successfully
       auth:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
-    command: go run profile/cmd/profile/main.go
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/ready || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health/ready || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -160,8 +174,8 @@ services:
       - VITE_AUTH_PROXY_TARGET=http://auth:8080
       - VITE_PROFILE_API_ORIGIN=/api
       - VITE_PROFILE_PROXY_TARGET=http://profile:8080
-      - VITE_LOBBY_API_ORIGIN=/api
-      - VITE_LOBBY_PROXY_TARGET=http://lobby:8080
+      - VITE_GAME_API_ORIGIN=/api
+      - VITE_GAME_PROXY_TARGET=http://game:8080
       - VITE_STORAGE_PROXY_TARGET=http://minio:9000
     command: sh -c "npm ci && npm run dev"
     depends_on:
@@ -169,7 +183,7 @@ services:
         condition: service_healthy
       profile:
         condition: service_healthy
-      lobby:
+      game:
         condition: service_healthy
 
   game-core:
@@ -184,20 +198,20 @@ services:
     working_dir: /app
     command: sh -c "npm ci && npx vite --host 0.0.0.0 --port 3001"
 
-  lobby-postgres:
+  game-postgres:
     image: postgres:15-alpine
-    container_name: snooker-lobby-postgres
+    container_name: snooker-game-postgres
     restart: always
     environment:
-      POSTGRES_DB: ${LOBBY_DB_NAME:-snooker_lobby}
-      POSTGRES_USER: ${LOBBY_DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${LOBBY_DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${GAME_DB_NAME:-snooker_game}
+      POSTGRES_USER: ${GAME_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${GAME_DB_PASSWORD:-postgres}
     ports:
-      - "${LOBBY_DB_PORT:-5434}:5432"
+      - "${GAME_DB_PORT:-5434}:5432"
     volumes:
-      - lobby_postgres_data:/var/lib/postgresql/data
+      - game_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${LOBBY_DB_USER:-postgres} -d ${LOBBY_DB_NAME:-snooker_lobby}"]
+      test: ["CMD-SHELL", "pg_isready -U ${GAME_DB_USER:-postgres} -d ${GAME_DB_NAME:-snooker_game}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -206,6 +220,7 @@ services:
     image: nats:alpine
     container_name: snooker-nats
     restart: always
+    command: ["-js"]
     ports:
       - "${NATS_PORT:-4222}:4222"
     healthcheck:
@@ -214,35 +229,37 @@ services:
       timeout: 5s
       retries: 5
 
-  lobby:
-    image: golang:1.25-alpine
-    container_name: snooker-lobby
+  game:
+    build:
+      context: .
+      dockerfile: lobby/Dockerfile
+    container_name: snooker-game
     restart: always
-    volumes:
-      - .:/app
-    working_dir: /app
     ports:
-      - "${LOBBY_PORT:-8083}:8080"
+      - "${GAME_PORT:-8083}:8080"
     environment:
       - PORT=8080
-      - ALLOWED_ORIGINS=${LOBBY_ALLOWED_ORIGINS:-http://localhost:3000}
+      - ALLOWED_ORIGINS=${GAME_ALLOWED_ORIGINS:-http://localhost:3000}
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
       - INTERNAL_API_KEY=${INTERNAL_API_KEY:-dev_internal_key_change_me}
-      - DB_HOST=lobby-postgres
+      - DB_HOST=game-postgres
       - DB_PORT=5432
-      - DB_USER=${LOBBY_DB_USER:-postgres}
-      - DB_PASSWORD=${LOBBY_DB_PASSWORD:-postgres}
-      - DB_NAME=${LOBBY_DB_NAME:-snooker_lobby}
+      - DB_USER=${GAME_DB_USER:-postgres}
+      - DB_PASSWORD=${GAME_DB_PASSWORD:-postgres}
+      - DB_NAME=${GAME_DB_NAME:-snooker_game}
       - DB_SSLMODE=disable
       - NATS_URL=nats://nats:4222
+      - GAME_OWNER_DISCONNECT_TIMEOUT_SECONDS=${GAME_OWNER_DISCONNECT_TIMEOUT_SECONDS:-10}
+      - PROFILE_INTERNAL_URL=http://profile:8080
     depends_on:
-      lobby-postgres:
+      game-postgres:
         condition: service_healthy
       nats:
         condition: service_healthy
-    command: go run lobby/cmd/lobby/main.go
+      profile:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/ready || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health/ready || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -251,5 +268,5 @@ services:
 volumes:
   auth_postgres_data:
   profile_postgres_data:
-  lobby_postgres_data:
+  game_postgres_data:
   minio_data:

@@ -6,7 +6,7 @@ Servico isolado de perfil publico do Snooker.
 
 - Codigo: `profile/`
 - Processo: container `snooker-profile`
-- Banco: container `snooker-profile-postgres`
+- Banco: container `snooker-profile-postgres`, database `snooker_game`
 - Tabelas: `profiles`, `photo_upload_sessions`
 - Storage: bucket MinIO `snooker-profiles`
 

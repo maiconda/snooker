@@ -42,7 +42,7 @@ func main() {
 		log.Fatalf("falha ao criar servidor: %v", err)
 	}
 
-	fmt.Println("lobby service pronto")
+	fmt.Println("game service pronto")
 	if err := s.Start(); err != nil {
 		log.Fatalf("falha ao iniciar servidor: %v", err)
 	}

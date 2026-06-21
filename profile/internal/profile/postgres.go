@@ -28,6 +28,16 @@ func (r *pgRepository) FindByUserID(ctx context.Context, userID uuid.UUID) (*Pro
 	return r.scanProfile(r.pool.QueryRow(ctx, query, userID))
 }
 
+func (r *pgRepository) IncrementXP(ctx context.Context, userID uuid.UUID, delta int) (*Profile, error) {
+	query := `
+		UPDATE profiles SET
+			xp = xp + $2,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE user_id = $1
+		RETURNING user_id, nickname, nickname_normalized, bio, photo_object_key, photo_url, xp, created_at, updated_at`
+	return r.scanProfile(r.pool.QueryRow(ctx, query, userID, delta))
+}
+
 func (r *pgRepository) Upsert(ctx context.Context, p *Profile) (*Profile, error) {
 	query := `
 		INSERT INTO profiles (user_id, nickname, nickname_normalized, bio, photo_object_key, photo_url, xp)

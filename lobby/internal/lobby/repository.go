@@ -19,14 +19,40 @@ var (
 	ErrRoomAlreadyJoined = errors.New("voce ja esta nesta sala")
 )
 
+type LeaveRole string
+
+const (
+	LeaveRoleSpectator LeaveRole = "spectator"
+	LeaveRoleCreator   LeaveRole = "creator"
+	LeaveRoleOpponent  LeaveRole = "opponent"
+)
+
+type ReleasedOpponent struct {
+	Room       *Room
+	OpponentID string
+}
+
 type Repository interface {
 	CreateRoom(ctx context.Context, creatorID string, isPrivate bool) (*Room, error)
 	GetRoomByID(ctx context.Context, id string) (*Room, error)
 	GetRoomByCode(ctx context.Context, code string) (*Room, error)
 	ListPublicRooms(ctx context.Context) ([]*Room, error)
 	JoinRoom(ctx context.Context, roomID string, opponentID string) (*Room, error)
-	ExpireRooms(ctx context.Context) (int64, error)
+	StartRoom(ctx context.Context, roomID string) (*Room, error)
+	FinishRoom(ctx context.Context, roomID string) (*Room, error)
+	ResetRoom(ctx context.Context, roomID string) (*Room, error)
+	StartRematchRoom(ctx context.Context, roomID string) (*Room, error)
+	ExpireRooms(ctx context.Context) ([]string, error)
 	CloseRoom(ctx context.Context, roomID string) error
+	LeaveRoom(ctx context.Context, roomID string, userID string) (*Room, LeaveRole, error)
+	MarkCreatorConnected(ctx context.Context, roomID string, creatorID string, connectionID string) (*Room, error)
+	MarkCreatorDisconnected(ctx context.Context, roomID string, creatorID string, connectionID string, disconnectedAt time.Time) (bool, error)
+	MarkOpponentConnected(ctx context.Context, roomID string, opponentID string, connectionID string) (*Room, error)
+	MarkOpponentDisconnected(ctx context.Context, roomID string, opponentID string, connectionID string, disconnectedAt time.Time) (bool, error)
+	CloseRoomIfCreatorDisconnected(ctx context.Context, roomID string, disconnectedBefore time.Time) (bool, error)
+	CloseRoomsWithExpiredCreatorDisconnect(ctx context.Context, disconnectedBefore time.Time) ([]string, error)
+	ReleaseOpponentIfDisconnected(ctx context.Context, roomID string, disconnectedBefore time.Time) (*Room, bool, error)
+	ReleaseRoomsWithExpiredOpponentDisconnect(ctx context.Context, disconnectedBefore time.Time) ([]ReleasedOpponent, error)
 }
 
 type postgresRepository struct {
@@ -49,7 +75,7 @@ func (r *postgresRepository) CreateRoom(ctx context.Context, creatorID string, i
 	query := `
 		INSERT INTO rooms (code, creator_id, opponent_id, status, is_private, created_at, expires_at)
 		VALUES ($1, $2, NULL, 'waiting', $3, $4, $5)
-		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at
+		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
 	`
 
 	var room Room
@@ -62,6 +88,10 @@ func (r *postgresRepository) CreateRoom(ctx context.Context, creatorID string, i
 		&room.IsPrivate,
 		&room.CreatedAt,
 		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao inserir sala: %w", err)
@@ -72,7 +102,7 @@ func (r *postgresRepository) CreateRoom(ctx context.Context, creatorID string, i
 
 func (r *postgresRepository) GetRoomByID(ctx context.Context, id string) (*Room, error) {
 	query := `
-		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at
+		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
 		FROM rooms
 		WHERE id = $1
 	`
@@ -87,6 +117,10 @@ func (r *postgresRepository) GetRoomByID(ctx context.Context, id string) (*Room,
 		&room.IsPrivate,
 		&room.CreatedAt,
 		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -96,7 +130,7 @@ func (r *postgresRepository) GetRoomByID(ctx context.Context, id string) (*Room,
 	}
 
 	// Se estiver expirada no tempo mas ainda nao marcada no banco, marcar como expirada
-	if room.Status == StatusWaiting && time.Now().After(room.ExpiresAt) {
+	if room.Status == StatusWaiting && room.OpponentID == nil && time.Now().After(room.ExpiresAt) {
 		_ = r.updateStatus(ctx, room.ID, StatusExpired)
 		room.Status = StatusExpired
 	}
@@ -106,7 +140,7 @@ func (r *postgresRepository) GetRoomByID(ctx context.Context, id string) (*Room,
 
 func (r *postgresRepository) GetRoomByCode(ctx context.Context, code string) (*Room, error) {
 	query := `
-		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at
+		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
 		FROM rooms
 		WHERE code = $1
 	`
@@ -121,6 +155,10 @@ func (r *postgresRepository) GetRoomByCode(ctx context.Context, code string) (*R
 		&room.IsPrivate,
 		&room.CreatedAt,
 		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -130,7 +168,7 @@ func (r *postgresRepository) GetRoomByCode(ctx context.Context, code string) (*R
 	}
 
 	// Verificar expiracao
-	if room.Status == StatusWaiting && time.Now().After(room.ExpiresAt) {
+	if room.Status == StatusWaiting && room.OpponentID == nil && time.Now().After(room.ExpiresAt) {
 		_ = r.updateStatus(ctx, room.ID, StatusExpired)
 		room.Status = StatusExpired
 	}
@@ -139,13 +177,10 @@ func (r *postgresRepository) GetRoomByCode(ctx context.Context, code string) (*R
 }
 
 func (r *postgresRepository) ListPublicRooms(ctx context.Context) ([]*Room, error) {
-	// Atualizar expiradas antes de listar
-	_, _ = r.ExpireRooms(ctx)
-
 	query := `
-		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at
+		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
 		FROM rooms
-		WHERE is_private = FALSE AND status = 'waiting'
+		WHERE is_private = FALSE AND status IN ('waiting', 'playing', 'finished')
 		ORDER BY created_at DESC
 	`
 
@@ -167,6 +202,10 @@ func (r *postgresRepository) ListPublicRooms(ctx context.Context) ([]*Room, erro
 			&room.IsPrivate,
 			&room.CreatedAt,
 			&room.ExpiresAt,
+			&room.CreatorDisconnectedAt,
+			&room.OpponentDisconnectedAt,
+			&room.CreatorConnectionID,
+			&room.OpponentConnectionID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("falha ao escanear sala: %w", err)
@@ -186,7 +225,7 @@ func (r *postgresRepository) JoinRoom(ctx context.Context, roomID string, oppone
 	defer tx.Rollback(ctx)
 
 	querySelect := `
-		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at
+		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
 		FROM rooms
 		WHERE id = $1
 		FOR UPDATE
@@ -202,6 +241,10 @@ func (r *postgresRepository) JoinRoom(ctx context.Context, roomID string, oppone
 		&room.IsPrivate,
 		&room.CreatedAt,
 		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -211,7 +254,7 @@ func (r *postgresRepository) JoinRoom(ctx context.Context, roomID string, oppone
 	}
 
 	// Validacoes
-	if room.Status == StatusExpired || time.Now().After(room.ExpiresAt) {
+	if room.Status == StatusExpired || (room.OpponentID == nil && time.Now().After(room.ExpiresAt)) {
 		_, _ = tx.Exec(ctx, "UPDATE rooms SET status = 'expired' WHERE id = $1", roomID)
 		return nil, ErrRoomExpired
 	}
@@ -235,7 +278,7 @@ func (r *postgresRepository) JoinRoom(ctx context.Context, roomID string, oppone
 		UPDATE rooms
 		SET opponent_id = $1
 		WHERE id = $2
-		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at
+		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
 	`
 
 	err = tx.QueryRow(ctx, queryUpdate, opponentID, roomID).Scan(
@@ -247,6 +290,10 @@ func (r *postgresRepository) JoinRoom(ctx context.Context, roomID string, oppone
 		&room.IsPrivate,
 		&room.CreatedAt,
 		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao atualizar oponente na sala: %w", err)
@@ -260,17 +307,177 @@ func (r *postgresRepository) JoinRoom(ctx context.Context, roomID string, oppone
 	return &room, nil
 }
 
-func (r *postgresRepository) ExpireRooms(ctx context.Context) (int64, error) {
+func (r *postgresRepository) StartRoom(ctx context.Context, roomID string) (*Room, error) {
+	query := `
+		UPDATE rooms
+		SET status = 'playing'
+		WHERE id = $1
+			AND status = 'waiting'
+			AND opponent_id IS NOT NULL
+			AND creator_disconnected_at IS NULL
+			AND opponent_disconnected_at IS NULL
+		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+	`
+
+	var room Room
+	err := r.pool.QueryRow(ctx, query, roomID).Scan(
+		&room.ID,
+		&room.Code,
+		&room.CreatorID,
+		&room.OpponentID,
+		&room.Status,
+		&room.IsPrivate,
+		&room.CreatedAt,
+		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRoomNotFound
+		}
+		return nil, fmt.Errorf("falha ao iniciar sala: %w", err)
+	}
+
+	return &room, nil
+}
+
+func (r *postgresRepository) FinishRoom(ctx context.Context, roomID string) (*Room, error) {
+	query := `
+		UPDATE rooms
+		SET status = 'finished'
+		WHERE id = $1
+			AND status = 'playing'
+			AND opponent_id IS NOT NULL
+		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+	`
+
+	var room Room
+	err := r.pool.QueryRow(ctx, query, roomID).Scan(
+		&room.ID,
+		&room.Code,
+		&room.CreatorID,
+		&room.OpponentID,
+		&room.Status,
+		&room.IsPrivate,
+		&room.CreatedAt,
+		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRoomNotFound
+		}
+		return nil, fmt.Errorf("falha ao finalizar sala: %w", err)
+	}
+
+	return &room, nil
+}
+
+func (r *postgresRepository) ResetRoom(ctx context.Context, roomID string) (*Room, error) {
+	query := `
+		UPDATE rooms
+		SET status = 'waiting',
+			expires_at = NOW() + INTERVAL '5 minutes',
+			creator_disconnected_at = NULL,
+			opponent_disconnected_at = NULL
+		WHERE id = $1
+			AND status = 'finished'
+			AND opponent_id IS NOT NULL
+		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+	`
+
+	var room Room
+	err := r.pool.QueryRow(ctx, query, roomID).Scan(
+		&room.ID,
+		&room.Code,
+		&room.CreatorID,
+		&room.OpponentID,
+		&room.Status,
+		&room.IsPrivate,
+		&room.CreatedAt,
+		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRoomNotFound
+		}
+		return nil, fmt.Errorf("falha ao resetar sala para revanche: %w", err)
+	}
+
+	return &room, nil
+}
+
+func (r *postgresRepository) StartRematchRoom(ctx context.Context, roomID string) (*Room, error) {
+	query := `
+		UPDATE rooms
+		SET status = 'playing',
+			expires_at = NOW() + INTERVAL '10 minutes',
+			creator_disconnected_at = NULL,
+			opponent_disconnected_at = NULL
+		WHERE id = $1
+			AND status = 'finished'
+			AND opponent_id IS NOT NULL
+		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+	`
+
+	var room Room
+	err := r.pool.QueryRow(ctx, query, roomID).Scan(
+		&room.ID,
+		&room.Code,
+		&room.CreatorID,
+		&room.OpponentID,
+		&room.Status,
+		&room.IsPrivate,
+		&room.CreatedAt,
+		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRoomNotFound
+		}
+		return nil, fmt.Errorf("falha ao iniciar revanche da sala: %w", err)
+	}
+
+	return &room, nil
+}
+
+func (r *postgresRepository) ExpireRooms(ctx context.Context) ([]string, error) {
 	query := `
 		UPDATE rooms
 		SET status = 'expired'
-		WHERE status = 'waiting' AND expires_at < $1
+		WHERE status = 'waiting' AND opponent_id IS NULL AND expires_at < $1
+		RETURNING id
 	`
-	cmd, err := r.pool.Exec(ctx, query, time.Now())
+	rows, err := r.pool.Query(ctx, query, time.Now())
 	if err != nil {
-		return 0, fmt.Errorf("falha ao expirar salas: %w", err)
+		return nil, fmt.Errorf("falha ao expirar salas: %w", err)
 	}
-	return cmd.RowsAffected(), nil
+	defer rows.Close()
+
+	expiredIDs := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("falha ao ler sala expirada: %w", err)
+		}
+		expiredIDs = append(expiredIDs, id)
+	}
+
+	return expiredIDs, rows.Err()
 }
 
 func (r *postgresRepository) updateStatus(ctx context.Context, roomID string, status RoomStatus) error {
@@ -280,9 +487,380 @@ func (r *postgresRepository) updateStatus(ctx context.Context, roomID string, st
 }
 
 func (r *postgresRepository) CloseRoom(ctx context.Context, roomID string) error {
-	query := "UPDATE rooms SET status = 'expired' WHERE id = $1"
+	query := `
+		UPDATE rooms
+		SET status = 'expired',
+			creator_disconnected_at = NULL,
+			opponent_disconnected_at = NULL,
+			creator_connection_id = NULL,
+			opponent_connection_id = NULL
+		WHERE id = $1
+	`
 	_, err := r.pool.Exec(ctx, query, roomID)
 	return err
+}
+
+func (r *postgresRepository) LeaveRoom(ctx context.Context, roomID string, userID string) (*Room, LeaveRole, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("falha ao iniciar transacao de saida da sala: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	querySelect := `
+		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+		FROM rooms
+		WHERE id = $1
+		FOR UPDATE
+	`
+
+	var room Room
+	err = tx.QueryRow(ctx, querySelect, roomID).Scan(
+		&room.ID,
+		&room.Code,
+		&room.CreatorID,
+		&room.OpponentID,
+		&room.Status,
+		&room.IsPrivate,
+		&room.CreatedAt,
+		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, "", ErrRoomNotFound
+		}
+		return nil, "", fmt.Errorf("falha ao buscar sala para saida: %w", err)
+	}
+
+	role := LeaveRoleSpectator
+	if room.CreatorID == userID {
+		role = LeaveRoleCreator
+		queryUpdate := `
+			UPDATE rooms
+			SET status = 'expired',
+				creator_disconnected_at = NULL,
+				opponent_disconnected_at = NULL,
+				creator_connection_id = NULL,
+				opponent_connection_id = NULL
+			WHERE id = $1
+			RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+		`
+		err = tx.QueryRow(ctx, queryUpdate, roomID).Scan(
+			&room.ID,
+			&room.Code,
+			&room.CreatorID,
+			&room.OpponentID,
+			&room.Status,
+			&room.IsPrivate,
+			&room.CreatedAt,
+			&room.ExpiresAt,
+			&room.CreatorDisconnectedAt,
+			&room.OpponentDisconnectedAt,
+			&room.CreatorConnectionID,
+			&room.OpponentConnectionID,
+		)
+		if err != nil {
+			return nil, "", fmt.Errorf("falha ao fechar sala na saida do criador: %w", err)
+		}
+	} else if room.OpponentID != nil && *room.OpponentID == userID {
+		role = LeaveRoleOpponent
+		queryUpdate := `
+			UPDATE rooms
+			SET opponent_id = NULL,
+				status = 'waiting',
+				expires_at = NOW() + INTERVAL '5 minutes',
+				opponent_disconnected_at = NULL,
+				opponent_connection_id = NULL
+			WHERE id = $1
+			RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+		`
+		err = tx.QueryRow(ctx, queryUpdate, roomID).Scan(
+			&room.ID,
+			&room.Code,
+			&room.CreatorID,
+			&room.OpponentID,
+			&room.Status,
+			&room.IsPrivate,
+			&room.CreatedAt,
+			&room.ExpiresAt,
+			&room.CreatorDisconnectedAt,
+			&room.OpponentDisconnectedAt,
+			&room.CreatorConnectionID,
+			&room.OpponentConnectionID,
+		)
+		if err != nil {
+			return nil, "", fmt.Errorf("falha ao liberar vaga do oponente: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, "", fmt.Errorf("falha ao commitar saida da sala: %w", err)
+	}
+
+	return &room, role, nil
+}
+
+func (r *postgresRepository) MarkCreatorConnected(ctx context.Context, roomID string, creatorID string, connectionID string) (*Room, error) {
+	query := `
+		UPDATE rooms
+		SET creator_disconnected_at = NULL, creator_connection_id = $1
+		WHERE id = $2 AND creator_id = $3 AND status IN ('waiting', 'playing', 'finished')
+		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+	`
+
+	var room Room
+	err := r.pool.QueryRow(ctx, query, connectionID, roomID, creatorID).Scan(
+		&room.ID,
+		&room.Code,
+		&room.CreatorID,
+		&room.OpponentID,
+		&room.Status,
+		&room.IsPrivate,
+		&room.CreatedAt,
+		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRoomNotFound
+		}
+		return nil, fmt.Errorf("falha ao marcar criador conectado: %w", err)
+	}
+
+	return &room, nil
+}
+
+func (r *postgresRepository) MarkCreatorDisconnected(ctx context.Context, roomID string, creatorID string, connectionID string, disconnectedAt time.Time) (bool, error) {
+	query := `
+		UPDATE rooms
+		SET creator_disconnected_at = $1
+		WHERE id = $2
+			AND creator_id = $3
+			AND creator_connection_id = $4
+			AND status IN ('waiting', 'playing', 'finished')
+	`
+
+	cmd, err := r.pool.Exec(ctx, query, disconnectedAt, roomID, creatorID, connectionID)
+	if err != nil {
+		return false, fmt.Errorf("falha ao marcar criador desconectado: %w", err)
+	}
+
+	return cmd.RowsAffected() > 0, nil
+}
+
+func (r *postgresRepository) MarkOpponentConnected(ctx context.Context, roomID string, opponentID string, connectionID string) (*Room, error) {
+	query := `
+		UPDATE rooms
+		SET opponent_disconnected_at = NULL, opponent_connection_id = $1
+		WHERE id = $2 AND opponent_id = $3 AND status IN ('waiting', 'playing', 'finished')
+		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+	`
+
+	var room Room
+	err := r.pool.QueryRow(ctx, query, connectionID, roomID, opponentID).Scan(
+		&room.ID,
+		&room.Code,
+		&room.CreatorID,
+		&room.OpponentID,
+		&room.Status,
+		&room.IsPrivate,
+		&room.CreatedAt,
+		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRoomNotFound
+		}
+		return nil, fmt.Errorf("falha ao marcar oponente conectado: %w", err)
+	}
+
+	return &room, nil
+}
+
+func (r *postgresRepository) MarkOpponentDisconnected(ctx context.Context, roomID string, opponentID string, connectionID string, disconnectedAt time.Time) (bool, error) {
+	query := `
+		UPDATE rooms
+		SET opponent_disconnected_at = $1
+		WHERE id = $2
+			AND opponent_id = $3
+			AND opponent_connection_id = $4
+			AND status IN ('waiting', 'playing', 'finished')
+	`
+
+	cmd, err := r.pool.Exec(ctx, query, disconnectedAt, roomID, opponentID, connectionID)
+	if err != nil {
+		return false, fmt.Errorf("falha ao marcar oponente desconectado: %w", err)
+	}
+
+	return cmd.RowsAffected() > 0, nil
+}
+
+func (r *postgresRepository) CloseRoomIfCreatorDisconnected(ctx context.Context, roomID string, disconnectedBefore time.Time) (bool, error) {
+	query := `
+		UPDATE rooms
+		SET status = 'expired',
+			creator_disconnected_at = NULL,
+			opponent_disconnected_at = NULL,
+			creator_connection_id = NULL,
+			opponent_connection_id = NULL
+		WHERE id = $1
+			AND status IN ('waiting', 'playing', 'finished')
+			AND creator_disconnected_at IS NOT NULL
+			AND creator_disconnected_at <= $2
+	`
+
+	cmd, err := r.pool.Exec(ctx, query, roomID, disconnectedBefore)
+	if err != nil {
+		return false, fmt.Errorf("falha ao fechar sala por desconexao do criador: %w", err)
+	}
+
+	return cmd.RowsAffected() > 0, nil
+}
+
+func (r *postgresRepository) CloseRoomsWithExpiredCreatorDisconnect(ctx context.Context, disconnectedBefore time.Time) ([]string, error) {
+	query := `
+		UPDATE rooms
+		SET status = 'expired',
+			creator_disconnected_at = NULL,
+			opponent_disconnected_at = NULL,
+			creator_connection_id = NULL,
+			opponent_connection_id = NULL
+		WHERE status IN ('waiting', 'playing', 'finished')
+			AND creator_disconnected_at IS NOT NULL
+			AND creator_disconnected_at <= $1
+		RETURNING id
+	`
+
+	rows, err := r.pool.Query(ctx, query, disconnectedBefore)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao fechar salas com criador desconectado: %w", err)
+	}
+	defer rows.Close()
+
+	roomIDs := []string{}
+	for rows.Next() {
+		var roomID string
+		if err := rows.Scan(&roomID); err != nil {
+			return nil, fmt.Errorf("falha ao ler sala fechada por timeout do criador: %w", err)
+		}
+		roomIDs = append(roomIDs, roomID)
+	}
+
+	return roomIDs, rows.Err()
+}
+
+func (r *postgresRepository) ReleaseOpponentIfDisconnected(ctx context.Context, roomID string, disconnectedBefore time.Time) (*Room, bool, error) {
+	query := `
+		UPDATE rooms
+		SET opponent_id = NULL,
+			status = 'waiting',
+			expires_at = NOW() + INTERVAL '5 minutes',
+			opponent_disconnected_at = NULL,
+			opponent_connection_id = NULL
+		WHERE id = $1
+			AND status IN ('waiting', 'playing', 'finished')
+			AND opponent_id IS NOT NULL
+			AND opponent_disconnected_at IS NOT NULL
+			AND opponent_disconnected_at <= $2
+		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+	`
+
+	var room Room
+	err := r.pool.QueryRow(ctx, query, roomID, disconnectedBefore).Scan(
+		&room.ID,
+		&room.Code,
+		&room.CreatorID,
+		&room.OpponentID,
+		&room.Status,
+		&room.IsPrivate,
+		&room.CreatedAt,
+		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("falha ao liberar oponente desconectado: %w", err)
+	}
+
+	return &room, true, nil
+}
+
+func (r *postgresRepository) ReleaseRoomsWithExpiredOpponentDisconnect(ctx context.Context, disconnectedBefore time.Time) ([]ReleasedOpponent, error) {
+	query := `
+		WITH candidates AS (
+			SELECT id, opponent_id AS released_opponent_id
+			FROM rooms
+			WHERE status IN ('waiting', 'playing', 'finished')
+				AND opponent_id IS NOT NULL
+				AND opponent_disconnected_at IS NOT NULL
+				AND opponent_disconnected_at <= $1
+		),
+		updated AS (
+			UPDATE rooms r
+			SET opponent_id = NULL,
+				status = 'waiting',
+				expires_at = NOW() + INTERVAL '5 minutes',
+				opponent_disconnected_at = NULL,
+				opponent_connection_id = NULL
+			FROM candidates c
+			WHERE r.id = c.id
+			RETURNING r.id, r.code, r.creator_id, r.opponent_id, r.status, r.is_private, r.created_at, r.expires_at,
+				r.creator_disconnected_at, r.opponent_disconnected_at, r.creator_connection_id, r.opponent_connection_id,
+				c.released_opponent_id
+		)
+		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at,
+			creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id,
+			released_opponent_id
+		FROM updated
+	`
+
+	rows, err := r.pool.Query(ctx, query, disconnectedBefore)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao liberar oponentes desconectados: %w", err)
+	}
+	defer rows.Close()
+
+	released := []ReleasedOpponent{}
+	for rows.Next() {
+		var room Room
+		var opponentID string
+		if err := rows.Scan(
+			&room.ID,
+			&room.Code,
+			&room.CreatorID,
+			&room.OpponentID,
+			&room.Status,
+			&room.IsPrivate,
+			&room.CreatedAt,
+			&room.ExpiresAt,
+			&room.CreatorDisconnectedAt,
+			&room.OpponentDisconnectedAt,
+			&room.CreatorConnectionID,
+			&room.OpponentConnectionID,
+			&opponentID,
+		); err != nil {
+			return nil, fmt.Errorf("falha ao ler oponente liberado: %w", err)
+		}
+		released = append(released, ReleasedOpponent{Room: &room, OpponentID: opponentID})
+	}
+
+	return released, rows.Err()
 }
 
 func (r *postgresRepository) generateUniqueCode(ctx context.Context) (string, error) {
