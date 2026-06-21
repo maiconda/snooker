@@ -37,6 +37,7 @@ func TestCueStatePayloadRejectsInvalidValues(t *testing.T) {
 		{"shot_seq": -1, "x": 0, "y": 0, "angle": 0, "power": 50},
 		{"shot_seq": 1, "x": 0, "y": 0, "angle": 0, "power": -1},
 		{"shot_seq": 1, "x": 0, "y": 0, "angle": 0, "power": 101},
+		{"shot_seq": 1, "x": 0, "y": 0, "angle": 0, "power": 50, "client_seq": -1},
 	}
 
 	for _, test := range tests {
@@ -63,6 +64,7 @@ func TestCueStatePayloadNormalizesAngles(t *testing.T) {
 
 	assert.True(t, ok)
 	assert.InDelta(t, math.Pi, payload["angle"], 0.000001)
+	assert.Equal(t, "user-1", payload["turn_user_id"])
 }
 
 func TestCueStatePayloadRejectsTurnSpoofing(t *testing.T) {

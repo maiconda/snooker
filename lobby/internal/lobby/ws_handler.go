@@ -727,6 +727,9 @@ func cueStatePayload(raw json.RawMessage, userID string) (map[string]any, bool) 
 		return nil, false
 	}
 	turnUserID := strings.TrimSpace(payload.TurnUserID)
+	if turnUserID == "" {
+		turnUserID = userID
+	}
 
 	if !finite(payload.X) ||
 		!finite(payload.Y) ||
@@ -735,6 +738,7 @@ func cueStatePayload(raw json.RawMessage, userID string) (map[string]any, bool) 
 		payload.Power < 0 ||
 		payload.Power > 100 ||
 		payload.ShotSeq < 0 ||
+		payload.ClientSeq < 0 ||
 		(turnUserID != "" && turnUserID != userID) {
 		return nil, false
 	}

@@ -141,6 +141,10 @@ function getMaxBallSpeed(balls: Ball[]): number {
   }, 0);
 }
 
+function getSunkTargetIds(balls: Ball[]): Set<number> {
+  return new Set(balls.filter((ball) => ball.sunk && !ball.isWhite).map((ball) => ball.id));
+}
+
 function isCueRespawnPositionFree(
   position: CueBallPosition,
   balls: Ball[],
@@ -380,6 +384,7 @@ export function SnookerMatch({
   const lastIncomingSnapshotAtRef = useRef(0);
   const lastCueSentAtRef = useRef(0);
   const hasSentInitialSnapshotRef = useRef(false);
+  const settledSunkTargetIdsRef = useRef<Set<number>>(new Set());
   const shotSeqRef = useRef(0);
   const scoresRef = useRef<Scoreboard>({ creator: 0, opponent: 0 });
   const turnUserIdRef = useRef(creatorId);
@@ -486,12 +491,13 @@ export function SnookerMatch({
 
   const resetMatch = useCallback(() => {
     const initialBalls = initBalls();
-    const nextPockets = createRandomPockets(initialBalls);
+    const nextPockets = currentUserId === creatorId ? createRandomPockets(initialBalls) : [];
 
     ballsRef.current = initialBalls;
     shotSeqRef.current = 0;
     pendingShotRef.current = null;
     winnerUserIdRef.current = undefined;
+    settledSunkTargetIdsRef.current = new Set();
     aimAngleRef.current = 0;
     aimVelocityRef.current = 0;
     aimInputRef.current.left = false;
@@ -515,7 +521,7 @@ export function SnookerMatch({
     setMatchScores({ creator: 0, opponent: 0 });
     setMatchTurn(creatorId);
     setMatchStatus("aiming");
-  }, [creatorId, setMatchScores, setMatchStatus, setMatchTurn, transitionToPockets]);
+  }, [creatorId, currentUserId, setMatchScores, setMatchStatus, setMatchTurn, transitionToPockets]);
 
   useEffect(() => {
     resetMatch();
@@ -574,9 +580,17 @@ export function SnookerMatch({
   const activeCueBallPosition = activeCueBall
     ? { x: activeCueBall.x, y: activeCueBall.y }
     : null;
+  const activeCueBallId = activeCueBall?.id;
   const isLocalTurn = currentUserId === turnUserId && !winnerUserId;
   const canControlCue = Boolean(isLocalTurn && isAiming && !isCueAnimating && !disabled);
-  const effectivePower = canControlCue ? power : remoteCue?.power ?? power;
+  const shouldRenderRemoteCue = Boolean(
+    remoteCue &&
+    !isLocalTurn &&
+    remoteCue.turn_user_id !== currentUserId &&
+    remoteCue.is_aiming &&
+    !winnerUserId
+  );
+  const effectivePower = canControlCue ? power : shouldRenderRemoteCue && remoteCue ? remoteCue.power : power;
   const canShoot = Boolean(canControlCue && activeCueBall && power > 0);
 
   useEffect(() => {
@@ -589,30 +603,39 @@ export function SnookerMatch({
   }, [aimAngle, canShoot, onHudChange, power, status]);
 
   useEffect(() => {
-    if (!remoteCue || isLocalTurn || remoteCue.turn_user_id !== turnUserId) return;
+    if (!remoteCue || !shouldRenderRemoteCue) return;
     const remoteAngle = normalizeAngle(remoteCue.angle);
     aimAngleRef.current = remoteAngle;
     setAimAngle(remoteAngle);
     setPower(clampPower(remoteCue.power));
-  }, [isLocalTurn, remoteCue, turnUserId]);
+  }, [remoteCue, shouldRenderRemoteCue]);
 
   useEffect(() => {
-    if (!canControlCue || !activeCueBall) return;
+    if (!canControlCue) return;
 
-    const now = Date.now();
-    if (now - lastCueSentAtRef.current < CUE_SEND_INTERVAL_MS) return;
-    lastCueSentAtRef.current = now;
+    const publishCueState = () => {
+      const cueBall = ballsRef.current.find((b) => b.isWhite && !b.sunk);
+      if (!cueBall) return;
 
-    onCueState({
-      shot_seq: shotSeqRef.current,
-      turn_user_id: turnUserId,
-      x: activeCueBall.x,
-      y: activeCueBall.y,
-      angle: normalizeAngle(aimAngleRef.current),
-      power,
-      is_aiming: true
-    });
-  }, [activeCueBall, aimAngle, canControlCue, onCueState, power, turnUserId]);
+      const now = Date.now();
+      if (now - lastCueSentAtRef.current < CUE_SEND_INTERVAL_MS) return;
+      lastCueSentAtRef.current = now;
+
+      onCueState({
+        shot_seq: shotSeqRef.current,
+        turn_user_id: turnUserId,
+        x: cueBall.x,
+        y: cueBall.y,
+        angle: normalizeAngle(aimAngleRef.current),
+        power,
+        is_aiming: true
+      });
+    };
+
+    publishCueState();
+    const timer = window.setInterval(publishCueState, CUE_SEND_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [activeCueBallId, canControlCue, onCueState, power, turnUserId]);
 
   useEffect(() => {
     if (!incomingSnapshot || incomingSnapshot.updated_at_ms <= lastIncomingSnapshotAtRef.current) {
@@ -623,10 +646,7 @@ export function SnookerMatch({
       return;
     }
 
-    if (
-      incomingSnapshot.shot_seq === shotSeqRef.current &&
-      (statusRef.current === "striking" || statusRef.current === "moving")
-    ) {
+    if (incomingSnapshot.shot_seq === shotSeqRef.current && (status === "striking" || status === "moving")) {
       return;
     }
 
@@ -634,6 +654,7 @@ export function SnookerMatch({
     hasSentInitialSnapshotRef.current = true;
 
     ballsRef.current = cloneBalls(incomingSnapshot.balls);
+    settledSunkTargetIdsRef.current = getSunkTargetIds(ballsRef.current);
     shotSeqRef.current = incomingSnapshot.shot_seq;
     winnerUserIdRef.current = incomingSnapshot.winner_user_id;
     pendingShotRef.current = null;
@@ -646,7 +667,7 @@ export function SnookerMatch({
     setMatchStatus(incomingSnapshot.status);
     setIsAiming(incomingSnapshot.status !== "moving" && incomingSnapshot.status !== "striking");
     setIsCueAnimating(false);
-  }, [incomingSnapshot, setMatchScores, setMatchStatus, setMatchTurn, transitionToPockets]);
+  }, [incomingSnapshot, setMatchScores, setMatchStatus, setMatchTurn, status, transitionToPockets]);
 
   const beginShot = useCallback(
     (shot: ShotStartedEvent, local: boolean) => {
@@ -659,7 +680,7 @@ export function SnookerMatch({
       pendingShotRef.current = {
         ...shot,
         angle: shotAngle,
-        beforeSunkIds: new Set(ballsRef.current.filter((ball) => ball.sunk).map((ball) => ball.id))
+        beforeSunkIds: getSunkTargetIds(ballsRef.current)
       };
       shotSeqRef.current = Math.max(shotSeqRef.current, shot.shot_seq);
       aimAngleRef.current = shotAngle;
@@ -821,29 +842,28 @@ export function SnookerMatch({
 
     const pendingShot = pendingShotRef.current;
     const shooterRole = roleForUser(pendingShot?.shooter_user_id ?? turnUserIdRef.current, creatorId, opponentId);
+    const beforeSunkIds = pendingShot?.beforeSunkIds ?? settledSunkTargetIdsRef.current;
     const nextScores = { ...scoresRef.current };
     let shooterSunkOwnBall = false;
+    const newlySunk = ballsRef.current.filter(
+      (ball) => ball.sunk && !beforeSunkIds.has(ball.id) && !ball.isWhite
+    );
 
-    if (pendingShot) {
-      const newlySunk = ballsRef.current.filter(
-        (ball) => ball.sunk && !pendingShot.beforeSunkIds.has(ball.id) && !ball.isWhite
-      );
+    for (const ball of newlySunk) {
+      if (ball.owner === "creator") {
+        nextScores.creator += ball.points ?? 10;
+      } else if (ball.owner === "opponent") {
+        nextScores.opponent += ball.points ?? 10;
+      } else if (ball.owner === "neutral" && shooterRole) {
+        nextScores[shooterRole] += ball.points ?? 30;
+      }
 
-      for (const ball of newlySunk) {
-        if (ball.owner === "creator") {
-          nextScores.creator += ball.points ?? 10;
-        } else if (ball.owner === "opponent") {
-          nextScores.opponent += ball.points ?? 10;
-        } else if (ball.owner === "neutral" && shooterRole) {
-          nextScores[shooterRole] += ball.points ?? 30;
-        }
-
-        if (!cueBallWasSunk && shooterRole && (ball.owner === shooterRole || ball.owner === "neutral")) {
-          shooterSunkOwnBall = true;
-        }
+      if (!cueBallWasSunk && shooterRole && (ball.owner === shooterRole || ball.owner === "neutral")) {
+        shooterSunkOwnBall = true;
       }
     }
 
+    settledSunkTargetIdsRef.current = getSunkTargetIds(ballsRef.current);
     setMatchScores(nextScores);
 
     const winnerRole = resolveWinnerRole(ballsRef.current, nextScores, shooterRole);
@@ -857,7 +877,7 @@ export function SnookerMatch({
           ? pendingShot.shooter_user_id
           : getNextTurnUserId(turnUserIdRef.current, creatorId, opponentId));
 
-    if (!nextWinnerUserId) {
+    if (!nextWinnerUserId && currentUserId === creatorId) {
       const nextPockets = createRandomPockets(ballsRef.current);
       transitionToPockets(nextPockets);
     }

@@ -10,6 +10,7 @@
 *.so
 *.dylib
 snooker-api
+.gocache
 
 # Arquivos de Cobertura de Testes
 *.out

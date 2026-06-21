@@ -34,6 +34,7 @@ type ChatMessage = {
 type RemoteCueState = CueTelemetry & {
   senderId: string;
   client_seq: number;
+  server_received_at_ms: number;
 };
 
 type RoomEventPayload = {
@@ -60,6 +61,12 @@ type SnapshotVersion = {
   updatedAtMs: number;
 };
 
+type CuePacketVersion = {
+  shotSeq: number;
+  clientSeq: number;
+  serverReceivedAtMs: number;
+};
+
 function normalizeAngle(value: number): number {
   const fullTurn = Math.PI * 2;
   let normalized = value % fullTurn;
@@ -80,8 +87,39 @@ function isUsableCuePayload(cue: CueStatePayload): boolean {
     isFiniteNumber(cue.power) &&
     cue.power >= 0 &&
     cue.power <= 100 &&
-    typeof cue.shot_seq === "number"
+    isFiniteNumber(cue.shot_seq) &&
+    cue.shot_seq >= 0 &&
+    isFiniteNumber(cue.client_seq) &&
+    cue.client_seq >= 0
   );
+}
+
+function cuePacketVersion(cue: CueStatePayload): CuePacketVersion {
+  return {
+    shotSeq: cue.shot_seq,
+    clientSeq: cue.client_seq,
+    serverReceivedAtMs: isFiniteNumber(cue.server_received_at_ms) ? cue.server_received_at_ms : 0
+  };
+}
+
+function isNewerCuePacket(next: CuePacketVersion, current?: CuePacketVersion): boolean {
+  if (!current) return true;
+
+  if (next.serverReceivedAtMs > 0 && current.serverReceivedAtMs > 0) {
+    if (next.serverReceivedAtMs !== current.serverReceivedAtMs) {
+      return next.serverReceivedAtMs > current.serverReceivedAtMs;
+    }
+  }
+
+  if (next.shotSeq !== current.shotSeq) {
+    return next.shotSeq > current.shotSeq;
+  }
+
+  if (next.clientSeq !== current.clientSeq) {
+    return next.clientSeq > current.clientSeq || next.serverReceivedAtMs > current.serverReceivedAtMs;
+  }
+
+  return next.serverReceivedAtMs > current.serverReceivedAtMs;
 }
 
 function isNewerSnapshot(snapshot: MatchSnapshot, current: SnapshotVersion): boolean {
@@ -140,7 +178,7 @@ export function GamePage({ roomId }: { roomId: string }) {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const profilesCache = useRef<Record<string, Profile>>({});
   const chatMessageIdsRef = useRef<Set<string>>(new Set());
-  const lastCueSeqBySender = useRef<Record<string, number>>({});
+  const lastCueVersionBySender = useRef<Record<string, CuePacketVersion>>({});
   const clientSeqRef = useRef(0);
   const lastCueSentAtRef = useRef(0);
   const chatOpenRef = useRef(false);
@@ -211,6 +249,10 @@ export function GamePage({ roomId }: { roomId: string }) {
 
   useEffect(() => {
     lastSnapshotVersionRef.current = { shotSeq: -1, updatedAtMs: 0 };
+    lastCueVersionBySender.current = {};
+    clientSeqRef.current = 0;
+    lastCueSentAtRef.current = 0;
+    setRemoteCue(null);
   }, [roomId]);
 
   useEffect(() => {
@@ -378,14 +420,18 @@ export function GamePage({ roomId }: { roomId: string }) {
 
             case "cue_state": {
               if (!senderId || senderId === userId) break;
-              const cue = payload as unknown as CueStatePayload;
-              const previousSeq = lastCueSeqBySender.current[senderId] ?? -1;
-              const nextSeq = typeof cue.client_seq === "number" ? cue.client_seq : 0;
-              if (nextSeq <= previousSeq || !isUsableCuePayload(cue)) break;
-              lastCueSeqBySender.current[senderId] = nextSeq;
+              const cue = rawPayload as CueStatePayload;
+              if (!isUsableCuePayload(cue)) break;
+
+              const nextVersion = cuePacketVersion(cue);
+              const previousVersion = lastCueVersionBySender.current[senderId];
+              if (!isNewerCuePacket(nextVersion, previousVersion)) break;
+
+              lastCueVersionBySender.current[senderId] = nextVersion;
               setRemoteCue({
                 senderId,
-                client_seq: nextSeq,
+                client_seq: nextVersion.clientSeq,
+                server_received_at_ms: nextVersion.serverReceivedAtMs,
                 shot_seq: cue.shot_seq,
                 turn_user_id: cue.turn_user_id ?? senderId,
                 x: cue.x,
@@ -398,6 +444,7 @@ export function GamePage({ roomId }: { roomId: string }) {
             }
 
             case "shot_started":
+              setRemoteCue(null);
               if (senderId !== userId) {
                 setIncomingShot(rawPayload as ShotStartedEvent);
               }
@@ -421,6 +468,11 @@ export function GamePage({ roomId }: { roomId: string }) {
               setScores(snapshot.scores);
               if (snapshot?.turn_user_id) {
                 setTurnUserId(snapshot.turn_user_id);
+                setRemoteCue((current) =>
+                  current && snapshot.status === "aiming" && current.turn_user_id === snapshot.turn_user_id
+                    ? current
+                    : null
+                );
               }
               if (snapshot?.status === "finished") {
                 setMatchSummary((prev) => ({
@@ -459,6 +511,9 @@ export function GamePage({ roomId }: { roomId: string }) {
                 setIncomingSnapshot(null);
                 setIncomingShot(null);
                 setRemoteCue(null);
+                lastCueVersionBySender.current = {};
+                clientSeqRef.current = 0;
+                lastCueSentAtRef.current = 0;
                 setIsNewMatch(true);
                 lastSnapshotVersionRef.current = { shotSeq: -1, updatedAtMs: 0 };
                 setResetKey(`${roomFromPayload.id}:${Date.now()}`);
@@ -475,6 +530,9 @@ export function GamePage({ roomId }: { roomId: string }) {
                 setIncomingSnapshot(null);
                 setIncomingShot(null);
                 setRemoteCue(null);
+                lastCueVersionBySender.current = {};
+                clientSeqRef.current = 0;
+                lastCueSentAtRef.current = 0;
                 lastSnapshotVersionRef.current = { shotSeq: -1, updatedAtMs: 0 };
                 setResetKey(`${roomFromPayload.id}:${Date.now()}`);
                 navigate(`/sala/${roomFromPayload.id}`);
