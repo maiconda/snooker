@@ -292,6 +292,8 @@ func TestHandler_CreateRoomRejectsSpectatorInOtherRoom(t *testing.T) {
 		c.Next()
 	}, handler.CreateRoom)
 
+	_, ok := handler.presence.RegisterRoomConnectionIfFree("other-room", "user-123", "conn-1")
+	assert.True(t, ok)
 	handler.presence.RegisterRoomSpectator("other-room", "user-123", "conn-1")
 
 	body, _ := json.Marshal(CreateRoomRequest{IsPrivate: false})
@@ -524,6 +526,8 @@ func TestHandler_JoinRoomRejectsSpectatorInOtherRoom(t *testing.T) {
 		IsPrivate: false,
 	}
 
+	_, ok := handler.presence.RegisterRoomConnectionIfFree("other-room", "user-123", "conn-1")
+	assert.True(t, ok)
 	handler.presence.RegisterRoomSpectator("other-room", "user-123", "conn-1")
 	repo.On("GetRoomByID", mock.Anything, "room-uuid").Return(roomBeforeJoin, nil)
 
@@ -798,5 +802,40 @@ func TestHandler_HandleWSRejectsUserInOtherActiveRoom(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
+	repo.AssertExpectations(t)
+}
+
+func TestHandler_HandleWSRejectsSecondTabInSameRoom(t *testing.T) {
+	repo := new(MockRepository)
+	handler := NewHandler(repo)
+	expectNoLifecycleChanges(repo)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/api/v1/rooms/:code_or_id/ws", func(c *gin.Context) {
+		c.Set(httpx.ContextKeyUserID, "user-123")
+		c.Next()
+	}, handler.HandleWS)
+
+	code := "XYZ999"
+	expectedRoom := &Room{
+		ID:        "room-uuid",
+		Code:      &code,
+		CreatorID: "user-123",
+		Status:    StatusPlaying,
+		IsPrivate: false,
+	}
+
+	_, ok := handler.presence.RegisterRoomConnectionIfFree("room-uuid", "user-123", "conn-existing")
+	assert.True(t, ok)
+	repo.On("GetRoomByID", mock.Anything, "room-uuid").Return(expectedRoom, nil)
+
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/rooms/room-uuid/ws", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	repo.AssertNotCalled(t, "UserHasActiveRoom", mock.Anything, mock.Anything, mock.Anything)
 	repo.AssertExpectations(t)
 }

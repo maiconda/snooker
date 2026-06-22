@@ -91,7 +91,7 @@ func (h *Handler) CreateRoom(c *gin.Context) {
 
 	h.expireRoomsAndCleanup(c.Request.Context())
 
-	if _, busy := h.presence.UserSpectatingRoom(userIDStr, ""); busy {
+	if _, busy := h.presence.UserInRoomConnection(userIDStr, ""); busy {
 		c.JSON(http.StatusConflict, httpx.ErrorResponse{
 			Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "Voce ja esta em uma partida ativa"},
 		})
@@ -214,7 +214,7 @@ func (h *Handler) JoinRoom(c *gin.Context) {
 		return
 	}
 
-	if _, busy := h.presence.UserSpectatingRoom(userIDStr, room.ID); busy {
+	if _, busy := h.presence.UserInRoomConnection(userIDStr, room.ID); busy {
 		c.JSON(http.StatusConflict, httpx.ErrorResponse{
 			Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "Voce ja esta em uma partida ativa"},
 		})

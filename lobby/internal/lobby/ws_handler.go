@@ -247,12 +247,15 @@ func (h *Handler) HandleWS(c *gin.Context) {
 		return
 	}
 
-	if _, busy := h.presence.UserSpectatingRoom(userID, room.ID); busy {
+	roomConnectionID := uuid.NewString()
+	if _, ok := h.presence.RegisterRoomConnectionIfFree(room.ID, userID, roomConnectionID); !ok {
 		c.JSON(http.StatusConflict, httpx.ErrorResponse{
 			Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "Voce ja esta em uma partida ativa"},
 		})
 		return
 	}
+	defer h.presence.UnregisterRoomConnection(room.ID, userID, roomConnectionID)
+
 	if activeInOtherRoom, err := h.repo.UserHasActiveRoom(c.Request.Context(), userID, room.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, httpx.ErrorResponse{
 			Error: httpx.ErrorDetail{Code: httpx.ErrCodeInternal, Message: err.Error()},
@@ -297,7 +300,7 @@ func (h *Handler) HandleWS(c *gin.Context) {
 
 	state := newRoomWebSocketState(room, isParticipant)
 	if userID == room.CreatorID {
-		connectionID := uuid.NewString()
+		connectionID := roomConnectionID
 		state.setParticipant(room, LeaveRoleCreator, connectionID)
 		if connectedRoom, err := h.repo.MarkCreatorConnected(context.Background(), room.ID, userID, connectionID); err == nil {
 			room = connectedRoom
@@ -311,7 +314,7 @@ func (h *Handler) HandleWS(c *gin.Context) {
 			log.Printf("falha ao marcar criador conectado na sala %s: %v", room.ID, err)
 		}
 	} else if room.OpponentID != nil && *room.OpponentID == userID {
-		connectionID := uuid.NewString()
+		connectionID := roomConnectionID
 		state.setParticipant(room, LeaveRoleOpponent, connectionID)
 		if connectedRoom, err := h.repo.MarkOpponentConnected(context.Background(), room.ID, userID, connectionID); err == nil {
 			room = connectedRoom
@@ -361,17 +364,8 @@ func (h *Handler) HandleWS(c *gin.Context) {
 	defer chatSub.Unsubscribe()
 
 	if !isParticipant {
-		spectatorConnectionID := uuid.NewString()
-		if _, ok := h.presence.RegisterRoomSpectatorIfFree(room.ID, userID, spectatorConnectionID); !ok {
-			if eventBytes, err := makeWSEvent("room_entry_rejected", "server", map[string]string{
-				"reason": "user_already_in_active_room",
-			}); err == nil {
-				enqueueWS(writeChan, done, eventBytes)
-			}
-			signalDone()
-			<-writeDone
-			return
-		}
+		spectatorConnectionID := roomConnectionID
+		h.presence.RegisterRoomSpectator(room.ID, userID, spectatorConnectionID)
 		state.setSpectatorConnection(spectatorConnectionID)
 	}
 	h.sendRoomSpectatorsSnapshot(room.ID, writeChan, done)

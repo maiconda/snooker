@@ -322,11 +322,13 @@ export function GamePage({ roomId }: { roomId: string }) {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     const connect = () => {
+      let opened = false;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       ws = new WebSocket(`${protocol}//${window.location.host}/api/v1/rooms/${activeRoomId}/ws?token=${token}`);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        opened = true;
         if (roomRef.current?.status === "playing") {
           ws?.send(JSON.stringify({ type: "request_game_state", payload: {} }));
         }
@@ -599,6 +601,11 @@ export function GamePage({ roomId }: { roomId: string }) {
 
       ws.onclose = () => {
         if (!active) return;
+        if (!opened) {
+          active = false;
+          setError("Nao foi possivel abrir esta partida. Verifique se ela ja esta aberta em outra aba.");
+          return;
+        }
         console.warn("WebSocket da partida desconectado. Reconectando em 2s...");
         reconnectTimer = setTimeout(connect, 2000);
       };

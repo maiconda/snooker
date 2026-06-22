@@ -22,15 +22,22 @@ type RoomSpectatorsSnapshot struct {
 }
 
 type presenceTracker struct {
-	mu             sync.RWMutex
-	online         map[string]map[string]struct{}
-	roomSpectators map[string]map[string]map[string]struct{}
+	mu                    sync.RWMutex
+	online                map[string]map[string]struct{}
+	roomSpectators        map[string]map[string]map[string]struct{}
+	activeRoomConnections map[string]roomConnection
+}
+
+type roomConnection struct {
+	RoomID       string
+	ConnectionID string
 }
 
 func newPresenceTracker() *presenceTracker {
 	return &presenceTracker{
-		online:         make(map[string]map[string]struct{}),
-		roomSpectators: make(map[string]map[string]map[string]struct{}),
+		online:                make(map[string]map[string]struct{}),
+		roomSpectators:        make(map[string]map[string]map[string]struct{}),
+		activeRoomConnections: make(map[string]roomConnection),
 	}
 }
 
@@ -96,42 +103,45 @@ func (p *presenceTracker) RegisterRoomSpectator(roomID string, userID string, co
 	p.roomSpectators[roomID][userID][connectionID] = struct{}{}
 }
 
-func (p *presenceTracker) RegisterRoomSpectatorIfFree(roomID string, userID string, connectionID string) (string, bool) {
+func (p *presenceTracker) RegisterRoomConnectionIfFree(roomID string, userID string, connectionID string) (string, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for existingRoomID, roomUsers := range p.roomSpectators {
-		if existingRoomID == roomID {
-			continue
-		}
-		if len(roomUsers[userID]) > 0 {
-			return existingRoomID, false
-		}
+	if current, ok := p.activeRoomConnections[userID]; ok {
+		return current.RoomID, false
 	}
 
-	if p.roomSpectators[roomID] == nil {
-		p.roomSpectators[roomID] = make(map[string]map[string]struct{})
+	p.activeRoomConnections[userID] = roomConnection{
+		RoomID:       roomID,
+		ConnectionID: connectionID,
 	}
-	if p.roomSpectators[roomID][userID] == nil {
-		p.roomSpectators[roomID][userID] = make(map[string]struct{})
-	}
-	p.roomSpectators[roomID][userID][connectionID] = struct{}{}
 	return "", true
 }
 
-func (p *presenceTracker) UserSpectatingRoom(userID string, excludeRoomID string) (string, bool) {
+func (p *presenceTracker) UnregisterRoomConnection(roomID string, userID string, connectionID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	current, ok := p.activeRoomConnections[userID]
+	if !ok || current.RoomID != roomID || current.ConnectionID != connectionID {
+		return false
+	}
+	delete(p.activeRoomConnections, userID)
+	return true
+}
+
+func (p *presenceTracker) UserInRoomConnection(userID string, excludeRoomID string) (string, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	for roomID, roomUsers := range p.roomSpectators {
-		if roomID == excludeRoomID {
-			continue
-		}
-		if len(roomUsers[userID]) > 0 {
-			return roomID, true
-		}
+	current, ok := p.activeRoomConnections[userID]
+	if !ok {
+		return "", false
 	}
-	return "", false
+	if excludeRoomID != "" && current.RoomID == excludeRoomID {
+		return "", false
+	}
+	return current.RoomID, true
 }
 
 func (p *presenceTracker) UnregisterRoomSpectator(roomID string, userID string, connectionID string) {
