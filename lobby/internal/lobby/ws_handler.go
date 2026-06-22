@@ -717,6 +717,20 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		if err != nil {
 			log.Printf("falha ao premiar XP da sala %s: %v", room.ID, err)
 		}
+		if len(xpAwards) == 0 {
+			participantIDs := roomParticipantIDs(finishedRoom)
+			xpAwards = make([]XPAward, 0, len(participantIDs))
+			for _, pID := range participantIDs {
+				delta := 25 // matchParticipationXP
+				if pID == nextSnapshot.WinnerUserID {
+					delta += 25 // matchWinnerBonusXP
+				}
+				xpAwards = append(xpAwards, XPAward{
+					UserID:  pID,
+					XPDelta: delta,
+				})
+			}
+		}
 		if finishedRoom.OpponentID != nil {
 			h.rematches.ConfigureRoom(finishedRoom.ID, finishedRoom.CreatorID, *finishedRoom.OpponentID)
 		}

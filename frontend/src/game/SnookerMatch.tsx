@@ -464,10 +464,11 @@ export function SnookerMatch({
   }, []);
 
   const transitionToPockets = useCallback(
-    (nextPockets: Pocket[], includeExitAnimation = true) => {
+    (nextPockets: Pocket[] | null | undefined, includeExitAnimation = true) => {
+      const safePockets = nextPockets ?? [];
       const isSamePockets =
-        pocketsRef.current.length === nextPockets.length &&
-        nextPockets.every((p, idx) => {
+        pocketsRef.current.length === safePockets.length &&
+        safePockets.every((p, idx) => {
           const curr = pocketsRef.current[idx];
           return curr && Math.abs(p.x - curr.x) < 0.0001 && Math.abs(p.y - curr.y) < 0.0001;
         });
@@ -476,13 +477,13 @@ export function SnookerMatch({
         return;
       }
 
-      pocketsRef.current = clonePockets(nextPockets);
+      pocketsRef.current = clonePockets(safePockets);
 
       if (pocketTransitionTimerRef.current !== null) {
         window.clearTimeout(pocketTransitionTimerRef.current);
       }
 
-      const enteringPockets = createRenderedPockets(nextPockets, "entering");
+      const enteringPockets = createRenderedPockets(safePockets, "entering");
       setPockets((currentPockets) => [
         ...(includeExitAnimation
           ? currentPockets
