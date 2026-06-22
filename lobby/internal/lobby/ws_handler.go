@@ -247,6 +247,24 @@ func (h *Handler) HandleWS(c *gin.Context) {
 		return
 	}
 
+	if _, busy := h.presence.UserSpectatingRoom(userID, room.ID); busy {
+		c.JSON(http.StatusConflict, httpx.ErrorResponse{
+			Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "Voce ja esta em uma partida ativa"},
+		})
+		return
+	}
+	if activeInOtherRoom, err := h.repo.UserHasActiveRoom(c.Request.Context(), userID, room.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, httpx.ErrorResponse{
+			Error: httpx.ErrorDetail{Code: httpx.ErrCodeInternal, Message: err.Error()},
+		})
+		return
+	} else if activeInOtherRoom {
+		c.JSON(http.StatusConflict, httpx.ErrorResponse{
+			Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "Voce ja esta em uma partida ativa"},
+		})
+		return
+	}
+
 	nc := natsclient.GetConn()
 	js := natsclient.GetJetStream()
 	if nc == nil || js == nil {
@@ -344,8 +362,17 @@ func (h *Handler) HandleWS(c *gin.Context) {
 
 	if !isParticipant {
 		spectatorConnectionID := uuid.NewString()
+		if _, ok := h.presence.RegisterRoomSpectatorIfFree(room.ID, userID, spectatorConnectionID); !ok {
+			if eventBytes, err := makeWSEvent("room_entry_rejected", "server", map[string]string{
+				"reason": "user_already_in_active_room",
+			}); err == nil {
+				enqueueWS(writeChan, done, eventBytes)
+			}
+			signalDone()
+			<-writeDone
+			return
+		}
 		state.setSpectatorConnection(spectatorConnectionID)
-		h.presence.RegisterRoomSpectator(room.ID, userID, spectatorConnectionID)
 	}
 	h.sendRoomSpectatorsSnapshot(room.ID, writeChan, done)
 	_, _, _, spectatorConnectionID, _ := state.disconnectSnapshot()

@@ -45,6 +45,7 @@ export type MatchSnapshot = {
   winner_user_id?: string;
   audit_hash?: string;
   updated_at_ms: number;
+  active_shot?: ShotStartedEvent;
 };
 
 export type CueTelemetry = {
@@ -565,6 +566,10 @@ export function SnookerMatch({
       return;
     }
 
+    if (incomingSnapshot.status === "moving") {
+      return;
+    }
+
     const previousTurnUserId = turnUserIdRef.current;
     const turnChanged = incomingSnapshot.turn_user_id !== previousTurnUserId;
     lastIncomingSnapshotAtRef.current = incomingSnapshot.updated_at_ms;
@@ -588,7 +593,7 @@ export function SnookerMatch({
     setMatchTurn(incomingSnapshot.turn_user_id);
     setWinnerUserId(incomingSnapshot.winner_user_id);
     setMatchStatus(incomingSnapshot.status);
-    setIsAiming(incomingSnapshot.status !== "moving" && incomingSnapshot.status !== "striking");
+    setIsAiming(incomingSnapshot.status !== "striking");
     setIsCueAnimating(false);
   }, [incomingSnapshot, setMatchStatus, setMatchTurn, transitionToPockets]);
 

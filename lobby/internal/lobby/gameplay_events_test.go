@@ -181,6 +181,35 @@ func TestServerMakesShooterLoseWhenBlackBallIsSunk(t *testing.T) {
 	assert.Equal(t, 0, next.Scores.Opponent)
 }
 
+func TestServerAcceptsShotResultWithPreviousClientShotSeq(t *testing.T) {
+	opponentID := "opponent-1"
+	room := &Room{
+		ID:         "room-1",
+		CreatorID:  "creator-1",
+		OpponentID: &opponentID,
+	}
+	current := newInitialMatchSnapshot(room)
+	current.ShotSeq = 1
+	current.Status = matchStatusMoving
+	current.ActiveShot = &activeShotState{
+		ShotSeq:       1,
+		ShooterUserID: "creator-1",
+		Angle:         0.4,
+		Power:         50,
+	}
+
+	next, ok := applyShotResult(room, current, shotResultPayload{
+		ShotSeq:       0,
+		ShooterUserID: "creator-1",
+		Balls:         current.Balls,
+	})
+
+	assert.True(t, ok)
+	assert.Equal(t, 1, next.ShotSeq)
+	assert.Equal(t, "opponent-1", next.TurnUserID)
+	assert.Equal(t, matchStatusAiming, next.Status)
+}
+
 func TestInitialSnapshotStartsTimedTurn(t *testing.T) {
 	room := &Room{
 		ID:        "room-1",

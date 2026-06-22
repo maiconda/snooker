@@ -27,6 +27,11 @@ func (m *MockRepository) CreateRoom(ctx context.Context, creatorID string, isPri
 	return args.Get(0).(*Room), args.Error(1)
 }
 
+func (m *MockRepository) UserHasActiveRoom(ctx context.Context, userID string, excludeRoomID string) (bool, error) {
+	args := m.Called(ctx, userID, excludeRoomID)
+	return args.Bool(0), args.Error(1)
+}
+
 func (m *MockRepository) GetRoomByID(ctx context.Context, id string) (*Room, error) {
 	args := m.Called(ctx, id)
 	if args.Get(0) == nil {
@@ -275,6 +280,32 @@ func TestHandler_CreateRoomRejectsUserInActiveRoom(t *testing.T) {
 	repo.AssertExpectations(t)
 }
 
+func TestHandler_CreateRoomRejectsSpectatorInOtherRoom(t *testing.T) {
+	repo := new(MockRepository)
+	handler := NewHandler(repo)
+	expectNoLifecycleChanges(repo)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/v1/rooms", func(c *gin.Context) {
+		c.Set(httpx.ContextKeyUserID, "user-123")
+		c.Next()
+	}, handler.CreateRoom)
+
+	handler.presence.RegisterRoomSpectator("other-room", "user-123", "conn-1")
+
+	body, _ := json.Marshal(CreateRoomRequest{IsPrivate: false})
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/rooms", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	repo.AssertNotCalled(t, "CreateRoom", mock.Anything, mock.Anything, mock.Anything)
+	repo.AssertExpectations(t)
+}
+
 func TestHandler_ListPublicRooms(t *testing.T) {
 	repo := new(MockRepository)
 	router := setupTestRouter(repo)
@@ -469,6 +500,40 @@ func TestHandler_JoinRoomRejectsUserInActiveRoom(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
+	repo.AssertExpectations(t)
+}
+
+func TestHandler_JoinRoomRejectsSpectatorInOtherRoom(t *testing.T) {
+	repo := new(MockRepository)
+	handler := NewHandler(repo)
+	expectNoLifecycleChanges(repo)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/v1/rooms/:code_or_id/join", func(c *gin.Context) {
+		c.Set(httpx.ContextKeyUserID, "user-123")
+		c.Next()
+	}, handler.JoinRoom)
+
+	code := "XYZ999"
+	roomBeforeJoin := &Room{
+		ID:        "room-uuid",
+		Code:      &code,
+		CreatorID: "user-creator",
+		Status:    StatusWaiting,
+		IsPrivate: false,
+	}
+
+	handler.presence.RegisterRoomSpectator("other-room", "user-123", "conn-1")
+	repo.On("GetRoomByID", mock.Anything, "room-uuid").Return(roomBeforeJoin, nil)
+
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/rooms/room-uuid/join", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	repo.AssertNotCalled(t, "JoinRoom", mock.Anything, mock.Anything, mock.Anything)
 	repo.AssertExpectations(t)
 }
 
@@ -696,6 +761,7 @@ func TestHandler_HandleWS_NatsUnavailable(t *testing.T) {
 	}
 
 	repo.On("GetRoomByID", mock.Anything, "room-uuid").Return(expectedRoom, nil)
+	repo.On("UserHasActiveRoom", mock.Anything, "user-123", "room-uuid").Return(false, nil)
 
 	req, _ := http.NewRequest(http.MethodGet, "/api/v1/rooms/room-uuid/ws", nil)
 	w := httptest.NewRecorder()
@@ -708,4 +774,29 @@ func TestHandler_HandleWS_NatsUnavailable(t *testing.T) {
 	err := json.Unmarshal(w.Body.Bytes(), &resp)
 	assert.NoError(t, err)
 	assert.Equal(t, httpx.ErrCodeInternal, resp.Error.Code)
+}
+
+func TestHandler_HandleWSRejectsUserInOtherActiveRoom(t *testing.T) {
+	repo := new(MockRepository)
+	router := setupTestRouter(repo)
+
+	code := "XYZ999"
+	expectedRoom := &Room{
+		ID:        "room-uuid",
+		Code:      &code,
+		CreatorID: "user-creator",
+		Status:    StatusWaiting,
+		IsPrivate: false,
+	}
+
+	repo.On("GetRoomByID", mock.Anything, "room-uuid").Return(expectedRoom, nil)
+	repo.On("UserHasActiveRoom", mock.Anything, "user-123", "room-uuid").Return(true, nil)
+
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/rooms/room-uuid/ws", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	repo.AssertExpectations(t)
 }

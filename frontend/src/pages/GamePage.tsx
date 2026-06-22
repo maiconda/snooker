@@ -583,6 +583,12 @@ export function GamePage({ roomId }: { roomId: string }) {
               navigate("/");
               break;
 
+            case "room_entry_rejected":
+              active = false;
+              setError("Voce ja esta em uma partida ativa.");
+              ws?.close();
+              break;
+
             default:
               break;
           }

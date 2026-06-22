@@ -37,6 +37,7 @@ type ReleasedOpponent struct {
 
 type Repository interface {
 	CreateRoom(ctx context.Context, creatorID string, isPrivate bool) (*Room, error)
+	UserHasActiveRoom(ctx context.Context, userID string, excludeRoomID string) (bool, error)
 	GetRoomByID(ctx context.Context, id string) (*Room, error)
 	GetRoomByCode(ctx context.Context, code string) (*Room, error)
 	ListPublicRooms(ctx context.Context) ([]*Room, error)
@@ -81,6 +82,23 @@ func (r *postgresRepository) userHasActiveRoomTx(ctx context.Context, tx pgx.Tx,
 	`
 	var exists bool
 	if err := tx.QueryRow(ctx, query, userID, excludeRoomID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("falha ao verificar partida ativa do usuario: %w", err)
+	}
+	return exists, nil
+}
+
+func (r *postgresRepository) UserHasActiveRoom(ctx context.Context, userID string, excludeRoomID string) (bool, error) {
+	query := `
+		SELECT EXISTS (
+			SELECT 1
+			FROM rooms
+			WHERE status IN ('waiting', 'playing')
+				AND (creator_id = $1 OR opponent_id = $1)
+				AND ($2 = '' OR id::text <> $2)
+		)
+	`
+	var exists bool
+	if err := r.pool.QueryRow(ctx, query, userID, excludeRoomID).Scan(&exists); err != nil {
 		return false, fmt.Errorf("falha ao verificar partida ativa do usuario: %w", err)
 	}
 	return exists, nil

@@ -79,6 +79,7 @@ func (h *Handler) CreateRoom(c *gin.Context) {
 		})
 		return
 	}
+	userIDStr := userID.(string)
 
 	var req CreateRoomRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -90,7 +91,14 @@ func (h *Handler) CreateRoom(c *gin.Context) {
 
 	h.expireRoomsAndCleanup(c.Request.Context())
 
-	room, err := h.repo.CreateRoom(c.Request.Context(), userID.(string), req.IsPrivate)
+	if _, busy := h.presence.UserSpectatingRoom(userIDStr, ""); busy {
+		c.JSON(http.StatusConflict, httpx.ErrorResponse{
+			Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "Voce ja esta em uma partida ativa"},
+		})
+		return
+	}
+
+	room, err := h.repo.CreateRoom(c.Request.Context(), userIDStr, req.IsPrivate)
 	if err != nil {
 		if errors.Is(err, ErrUserInActiveRoom) {
 			c.JSON(http.StatusConflict, httpx.ErrorResponse{
@@ -174,6 +182,7 @@ func (h *Handler) JoinRoom(c *gin.Context) {
 		})
 		return
 	}
+	userIDStr := userID.(string)
 
 	codeOrID := c.Param("code_or_id")
 	if codeOrID == "" {
@@ -205,7 +214,14 @@ func (h *Handler) JoinRoom(c *gin.Context) {
 		return
 	}
 
-	joinedRoom, err := h.repo.JoinRoom(c.Request.Context(), room.ID, userID.(string))
+	if _, busy := h.presence.UserSpectatingRoom(userIDStr, room.ID); busy {
+		c.JSON(http.StatusConflict, httpx.ErrorResponse{
+			Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "Voce ja esta em uma partida ativa"},
+		})
+		return
+	}
+
+	joinedRoom, err := h.repo.JoinRoom(c.Request.Context(), room.ID, userIDStr)
 	if err != nil {
 		if errors.Is(err, ErrRoomNotFound) {
 			c.JSON(http.StatusNotFound, httpx.ErrorResponse{
@@ -247,7 +263,7 @@ func (h *Handler) JoinRoom(c *gin.Context) {
 	if err := natsclient.EnsureRoomStream(joinedRoom.ID); err != nil {
 		log.Printf("falha ao preparar stream JetStream da sala %s: %v", joinedRoom.ID, err)
 	}
-	if h.presence.UnregisterRoomSpectatorUser(joinedRoom.ID, userID.(string)) {
+	if h.presence.UnregisterRoomSpectatorUser(joinedRoom.ID, userIDStr) {
 		h.publishRoomSpectatorsSnapshot(joinedRoom.ID)
 	}
 	h.publishRoomEvent("player_joined", userID.(string), joinedRoom, map[string]any{

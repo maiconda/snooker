@@ -96,6 +96,44 @@ func (p *presenceTracker) RegisterRoomSpectator(roomID string, userID string, co
 	p.roomSpectators[roomID][userID][connectionID] = struct{}{}
 }
 
+func (p *presenceTracker) RegisterRoomSpectatorIfFree(roomID string, userID string, connectionID string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for existingRoomID, roomUsers := range p.roomSpectators {
+		if existingRoomID == roomID {
+			continue
+		}
+		if len(roomUsers[userID]) > 0 {
+			return existingRoomID, false
+		}
+	}
+
+	if p.roomSpectators[roomID] == nil {
+		p.roomSpectators[roomID] = make(map[string]map[string]struct{})
+	}
+	if p.roomSpectators[roomID][userID] == nil {
+		p.roomSpectators[roomID][userID] = make(map[string]struct{})
+	}
+	p.roomSpectators[roomID][userID][connectionID] = struct{}{}
+	return "", true
+}
+
+func (p *presenceTracker) UserSpectatingRoom(userID string, excludeRoomID string) (string, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	for roomID, roomUsers := range p.roomSpectators {
+		if roomID == excludeRoomID {
+			continue
+		}
+		if len(roomUsers[userID]) > 0 {
+			return roomID, true
+		}
+	}
+	return "", false
+}
+
 func (p *presenceTracker) UnregisterRoomSpectator(roomID string, userID string, connectionID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

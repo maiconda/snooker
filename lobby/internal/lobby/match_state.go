@@ -294,7 +294,7 @@ func parseShotResult(raw json.RawMessage) (shotResultPayload, bool) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return payload, false
 	}
-	if payload.ShotSeq <= 0 || payload.SimulatedTicks < 0 {
+	if payload.ShotSeq < 0 || payload.SimulatedTicks < 0 {
 		return payload, false
 	}
 	if payload.AuditHash != "" && len(payload.AuditHash) != 64 {
@@ -374,9 +374,14 @@ func sanitizeSubmittedPockets(submitted []matchPocket, roomID string, shotSeq in
 
 func applyShotResult(room *Room, current matchSnapshot, result shotResultPayload) (matchSnapshot, bool) {
 	if current.ActiveShot == nil ||
-		current.Status != matchStatusMoving ||
-		current.ActiveShot.ShotSeq != result.ShotSeq {
+		current.Status != matchStatusMoving {
 		return current, false
+	}
+	if current.ActiveShot.ShotSeq != result.ShotSeq {
+		if result.ShotSeq != current.ActiveShot.ShotSeq-1 {
+			return current, false
+		}
+		result.ShotSeq = current.ActiveShot.ShotSeq
 	}
 
 	if result.ShooterUserID != "" && result.ShooterUserID != current.ActiveShot.ShooterUserID {
