@@ -108,6 +108,12 @@ type AimInputState = {
 };
 
 type PendingShot = ShotStartedEvent;
+type SnapshotVersion = {
+  shotSeq: number;
+  turnSeq: number;
+  updatedAtMs: number;
+  status?: MatchStatus;
+};
 
 const FORCE_MULTIPLIER = 0.04;
 const AIM_RESPONSE = 6.4;
@@ -135,6 +141,43 @@ function normalizeAngle(value: number): number {
   if (normalized <= -Math.PI) normalized += fullTurn;
   if (normalized > Math.PI) normalized -= fullTurn;
   return normalized;
+}
+
+function snapshotVersion(snapshot: MatchSnapshot): SnapshotVersion {
+  return {
+    shotSeq: snapshot.shot_seq,
+    turnSeq: snapshot.turn_seq,
+    updatedAtMs: snapshot.updated_at_ms,
+    status: snapshot.status
+  };
+}
+
+function isNewerSnapshotVersion(next: SnapshotVersion, current: SnapshotVersion): boolean {
+  if (next.shotSeq !== current.shotSeq) {
+    return next.shotSeq > current.shotSeq;
+  }
+  if (next.turnSeq !== current.turnSeq) {
+    return next.turnSeq > current.turnSeq;
+  }
+  if (next.updatedAtMs !== current.updatedAtMs) {
+    return next.updatedAtMs > current.updatedAtMs;
+  }
+  return snapshotStatusRank(next.status) > snapshotStatusRank(current.status);
+}
+
+function snapshotStatusRank(status?: MatchStatus): number {
+  switch (status) {
+    case "aiming":
+      return 1;
+    case "striking":
+      return 2;
+    case "moving":
+      return 3;
+    case "finished":
+      return 4;
+    default:
+      return 0;
+  }
 }
 
 function getMaxBallSpeed(balls: Ball[]): number {
@@ -377,7 +420,11 @@ export function SnookerMatch({
   const aimVelocityRef = useRef(0);
   const pendingShotRef = useRef<PendingShot | null>(null);
   const lastRemoteShotSeqRef = useRef(0);
-  const lastIncomingSnapshotAtRef = useRef(0);
+  const lastIncomingSnapshotVersionRef = useRef<SnapshotVersion>({
+    shotSeq: -1,
+    turnSeq: 0,
+    updatedAtMs: 0
+  });
   const lastCueSentAtRef = useRef(0);
   const shotSeqRef = useRef(0);
   const turnUserIdRef = useRef(creatorId);
@@ -471,7 +518,11 @@ export function SnookerMatch({
 
     // Reset sequence tracking refs to allow correct packet synchronization on reset/rematch
     lastRemoteShotSeqRef.current = 0;
-    lastIncomingSnapshotAtRef.current = 0;
+    lastIncomingSnapshotVersionRef.current = {
+      shotSeq: -1,
+      turnSeq: 0,
+      updatedAtMs: 0
+    };
     lastCueSentAtRef.current = 0;
 
     transitionToPockets([], false);
@@ -558,7 +609,12 @@ export function SnookerMatch({
   }, [activeCueBallId, canControlCue, onCueState, power, turnUserId]);
 
   useEffect(() => {
-    if (!incomingSnapshot || incomingSnapshot.updated_at_ms <= lastIncomingSnapshotAtRef.current) {
+    if (!incomingSnapshot) {
+      return;
+    }
+
+    const nextSnapshotVersion = snapshotVersion(incomingSnapshot);
+    if (!isNewerSnapshotVersion(nextSnapshotVersion, lastIncomingSnapshotVersionRef.current)) {
       return;
     }
 
@@ -567,12 +623,13 @@ export function SnookerMatch({
     }
 
     if (incomingSnapshot.status === "moving") {
+      lastIncomingSnapshotVersionRef.current = nextSnapshotVersion;
       return;
     }
 
     const previousTurnUserId = turnUserIdRef.current;
     const turnChanged = incomingSnapshot.turn_user_id !== previousTurnUserId;
-    lastIncomingSnapshotAtRef.current = incomingSnapshot.updated_at_ms;
+    lastIncomingSnapshotVersionRef.current = nextSnapshotVersion;
 
     ballsRef.current = cloneBalls(incomingSnapshot.balls);
     shotSeqRef.current = incomingSnapshot.shot_seq;
@@ -770,14 +827,20 @@ export function SnookerMatch({
     setMatchStatus("moving");
 
     if (pendingShot?.shooter_user_id === currentUserId) {
-      const audit = await exportAuditState(ballsRef.current);
+      let auditHash: string | undefined;
+      try {
+        auditHash = (await exportAuditState(ballsRef.current)).hash;
+      } catch (err) {
+        console.warn("Falha ao gerar hash de auditoria da tacada:", err);
+      }
+
       onShotResult({
         shot_seq: pendingShot.shot_seq,
         shooter_user_id: pendingShot.shooter_user_id,
         balls: cloneBalls(ballsRef.current),
         pockets: clonePockets(pocketsRef.current),
         cue_ball_sunk: cueBallWasSunk,
-        audit_hash: audit.hash
+        audit_hash: auditHash
       });
     }
   }, [currentUserId, onShotResult, setMatchStatus]);

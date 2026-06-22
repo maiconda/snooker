@@ -68,7 +68,9 @@ const INITIAL_SCORES: Scoreboard = { creator: 0, opponent: 0 };
 
 type SnapshotVersion = {
   shotSeq: number;
+  turnSeq: number;
   updatedAtMs: number;
+  status?: MatchSnapshot["status"];
 };
 
 type CuePacketVersion = {
@@ -133,16 +135,40 @@ function isNewerCuePacket(next: CuePacketVersion, current?: CuePacketVersion): b
 }
 
 function isNewerSnapshot(snapshot: MatchSnapshot, current: SnapshotVersion): boolean {
-  if (!isFiniteNumber(snapshot.updated_at_ms) || typeof snapshot.shot_seq !== "number") {
+  if (
+    !isFiniteNumber(snapshot.updated_at_ms) ||
+    typeof snapshot.shot_seq !== "number" ||
+    typeof snapshot.turn_seq !== "number"
+  ) {
     return false;
   }
-  if (snapshot.shot_seq < current.shotSeq) {
-    return false;
+
+  if (snapshot.shot_seq !== current.shotSeq) {
+    return snapshot.shot_seq > current.shotSeq;
   }
-  if (snapshot.shot_seq === current.shotSeq && snapshot.updated_at_ms <= current.updatedAtMs) {
-    return false;
+  if (snapshot.turn_seq !== current.turnSeq) {
+    return snapshot.turn_seq > current.turnSeq;
   }
-  return true;
+  if (snapshot.updated_at_ms !== current.updatedAtMs) {
+    return snapshot.updated_at_ms > current.updatedAtMs;
+  }
+
+  return snapshotStatusRank(snapshot.status) > snapshotStatusRank(current.status);
+}
+
+function snapshotStatusRank(status?: MatchSnapshot["status"]): number {
+  switch (status) {
+    case "aiming":
+      return 1;
+    case "striking":
+      return 2;
+    case "moving":
+      return 3;
+    case "finished":
+      return 4;
+    default:
+      return 0;
+  }
 }
 
 export function GamePage({ roomId }: { roomId: string }) {
@@ -181,7 +207,7 @@ export function GamePage({ roomId }: { roomId: string }) {
   const clientSeqRef = useRef(0);
   const lastCueSentAtRef = useRef(0);
   const chatOpenRef = useRef(false);
-  const lastSnapshotVersionRef = useRef<SnapshotVersion>({ shotSeq: -1, updatedAtMs: 0 });
+  const lastSnapshotVersionRef = useRef<SnapshotVersion>({ shotSeq: -1, turnSeq: 0, updatedAtMs: 0 });
   const roomRef = useRef<Room | null>(null);
   const scoresRef = useRef<Scoreboard>(INITIAL_SCORES);
   const clockOffsetRef = useRef(0);
@@ -247,7 +273,9 @@ export function GamePage({ roomId }: { roomId: string }) {
     }
     lastSnapshotVersionRef.current = {
       shotSeq: snapshot.shot_seq,
-      updatedAtMs: snapshot.updated_at_ms
+      turnSeq: snapshot.turn_seq,
+      updatedAtMs: snapshot.updated_at_ms,
+      status: snapshot.status
     };
     return true;
   }, []);
@@ -265,7 +293,7 @@ export function GamePage({ roomId }: { roomId: string }) {
   }, []);
 
   useEffect(() => {
-    lastSnapshotVersionRef.current = { shotSeq: -1, updatedAtMs: 0 };
+    lastSnapshotVersionRef.current = { shotSeq: -1, turnSeq: 0, updatedAtMs: 0 };
     lastCueVersionBySender.current = {};
     clientSeqRef.current = 0;
     lastCueSentAtRef.current = 0;
@@ -552,7 +580,7 @@ export function GamePage({ roomId }: { roomId: string }) {
                 lastCueVersionBySender.current = {};
                 clientSeqRef.current = 0;
                 lastCueSentAtRef.current = 0;
-                lastSnapshotVersionRef.current = { shotSeq: -1, updatedAtMs: 0 };
+                lastSnapshotVersionRef.current = { shotSeq: -1, turnSeq: 0, updatedAtMs: 0 };
                 setResetKey(`${roomFromPayload.id}:${Date.now()}`);
               }
               break;
@@ -571,7 +599,7 @@ export function GamePage({ roomId }: { roomId: string }) {
                 lastCueVersionBySender.current = {};
                 clientSeqRef.current = 0;
                 lastCueSentAtRef.current = 0;
-                lastSnapshotVersionRef.current = { shotSeq: -1, updatedAtMs: 0 };
+                lastSnapshotVersionRef.current = { shotSeq: -1, turnSeq: 0, updatedAtMs: 0 };
                 setResetKey(`${roomFromPayload.id}:${Date.now()}`);
                 navigate(`/sala/${roomFromPayload.id}`);
               }

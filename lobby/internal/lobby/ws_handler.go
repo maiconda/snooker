@@ -1114,8 +1114,10 @@ func (h *Handler) getCachedSnapshot(roomID string) (json.RawMessage, bool) {
 }
 
 type matchSnapshotVersion struct {
-	ShotSeq     int   `json:"shot_seq"`
-	UpdatedAtMS int64 `json:"updated_at_ms"`
+	ShotSeq     int    `json:"shot_seq"`
+	TurnSeq     int    `json:"turn_seq"`
+	UpdatedAtMS int64  `json:"updated_at_ms"`
+	Status      string `json:"status"`
 }
 
 func snapshotVersion(raw json.RawMessage) (matchSnapshotVersion, bool) {
@@ -1123,20 +1125,36 @@ func snapshotVersion(raw json.RawMessage) (matchSnapshotVersion, bool) {
 	if err := json.Unmarshal(raw, &version); err != nil {
 		return version, false
 	}
-	if version.ShotSeq < 0 || version.UpdatedAtMS <= 0 {
+	if version.ShotSeq < 0 || version.TurnSeq < 0 || version.UpdatedAtMS <= 0 {
 		return version, false
 	}
 	return version, true
 }
 
 func snapshotIsNewer(incoming, current matchSnapshotVersion) bool {
-	if incoming.ShotSeq < current.ShotSeq {
-		return false
+	if incoming.ShotSeq != current.ShotSeq {
+		return incoming.ShotSeq > current.ShotSeq
 	}
-	if incoming.ShotSeq == current.ShotSeq && incoming.UpdatedAtMS <= current.UpdatedAtMS {
-		return false
+	if incoming.TurnSeq != current.TurnSeq {
+		return incoming.TurnSeq > current.TurnSeq
 	}
-	return true
+	if incoming.UpdatedAtMS != current.UpdatedAtMS {
+		return incoming.UpdatedAtMS > current.UpdatedAtMS
+	}
+	return snapshotStatusRank(incoming.Status) > snapshotStatusRank(current.Status)
+}
+
+func snapshotStatusRank(status string) int {
+	switch status {
+	case matchStatusAiming:
+		return 1
+	case matchStatusMoving:
+		return 3
+	case matchStatusFinished:
+		return 4
+	default:
+		return 0
+	}
 }
 
 func (h *Handler) setCachedSnapshot(roomID string, snap json.RawMessage) bool {

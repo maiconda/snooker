@@ -86,19 +86,49 @@ func TestCueStatePayloadRejectsTurnSpoofing(t *testing.T) {
 func TestCachedSnapshotRejectsOlderVersions(t *testing.T) {
 	handler := NewHandler(nil)
 
-	newer := json.RawMessage(`{"shot_seq":2,"updated_at_ms":2000,"scores":{"creator":20,"opponent":0}}`)
-	olderSeq := json.RawMessage(`{"shot_seq":1,"updated_at_ms":3000,"scores":{"creator":0,"opponent":0}}`)
-	olderTimestamp := json.RawMessage(`{"shot_seq":2,"updated_at_ms":1000,"scores":{"creator":0,"opponent":0}}`)
-	fresher := json.RawMessage(`{"shot_seq":2,"updated_at_ms":3000,"scores":{"creator":30,"opponent":0}}`)
+	newer := json.RawMessage(`{"shot_seq":2,"turn_seq":3,"updated_at_ms":2000,"status":"aiming","scores":{"creator":20,"opponent":0}}`)
+	olderSeq := json.RawMessage(`{"shot_seq":1,"turn_seq":3,"updated_at_ms":3000,"status":"aiming","scores":{"creator":0,"opponent":0}}`)
+	olderTurn := json.RawMessage(`{"shot_seq":2,"turn_seq":2,"updated_at_ms":3000,"status":"aiming","scores":{"creator":0,"opponent":0}}`)
+	olderTimestamp := json.RawMessage(`{"shot_seq":2,"turn_seq":3,"updated_at_ms":1000,"status":"aiming","scores":{"creator":0,"opponent":0}}`)
+	fresher := json.RawMessage(`{"shot_seq":2,"turn_seq":3,"updated_at_ms":3000,"status":"aiming","scores":{"creator":30,"opponent":0}}`)
 
 	assert.True(t, handler.setCachedSnapshot("room-1", newer))
 	assert.False(t, handler.setCachedSnapshot("room-1", olderSeq))
+	assert.False(t, handler.setCachedSnapshot("room-1", olderTurn))
 	assert.False(t, handler.setCachedSnapshot("room-1", olderTimestamp))
 	assert.True(t, handler.setCachedSnapshot("room-1", fresher))
 
 	cached, ok := handler.getCachedSnapshot("room-1")
 	assert.True(t, ok)
 	assert.JSONEq(t, string(fresher), string(cached))
+}
+
+func TestCachedSnapshotAcceptsTurnAdvanceInSameMillisecond(t *testing.T) {
+	handler := NewHandler(nil)
+
+	moving := json.RawMessage(`{"shot_seq":1,"turn_seq":1,"updated_at_ms":2000,"status":"moving","scores":{"creator":0,"opponent":0}}`)
+	nextTurn := json.RawMessage(`{"shot_seq":1,"turn_seq":2,"updated_at_ms":2000,"status":"aiming","scores":{"creator":10,"opponent":0}}`)
+
+	assert.True(t, handler.setCachedSnapshot("room-1", moving))
+	assert.True(t, handler.setCachedSnapshot("room-1", nextTurn))
+
+	cached, ok := handler.getCachedSnapshot("room-1")
+	assert.True(t, ok)
+	assert.JSONEq(t, string(nextTurn), string(cached))
+}
+
+func TestCachedSnapshotAcceptsFinishedStatusInSameMillisecond(t *testing.T) {
+	handler := NewHandler(nil)
+
+	moving := json.RawMessage(`{"shot_seq":1,"turn_seq":1,"updated_at_ms":2000,"status":"moving","scores":{"creator":0,"opponent":0}}`)
+	finished := json.RawMessage(`{"shot_seq":1,"turn_seq":1,"updated_at_ms":2000,"status":"finished","winner_user_id":"opponent-1","scores":{"creator":0,"opponent":0}}`)
+
+	assert.True(t, handler.setCachedSnapshot("room-1", moving))
+	assert.True(t, handler.setCachedSnapshot("room-1", finished))
+
+	cached, ok := handler.getCachedSnapshot("room-1")
+	assert.True(t, ok)
+	assert.JSONEq(t, string(finished), string(cached))
 }
 
 func TestServerAppliesShotResultRulesFromCanonicalBallIDs(t *testing.T) {
@@ -317,7 +347,7 @@ func TestServerRejectsShotResultThatUnsinksCommittedBalls(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestServerRejectsShotResultWithMismatchedAuditHash(t *testing.T) {
+func TestServerNormalizesShotResultWithMismatchedAuditHash(t *testing.T) {
 	opponentID := "opponent-1"
 	room := &Room{
 		ID:         "room-1",
@@ -334,14 +364,17 @@ func TestServerRejectsShotResultWithMismatchedAuditHash(t *testing.T) {
 		Power:         50,
 	}
 
-	_, ok := applyShotResult(room, current, shotResultPayload{
+	next, ok := applyShotResult(room, current, shotResultPayload{
 		ShotSeq:       1,
 		ShooterUserID: "creator-1",
 		Balls:         current.Balls,
 		AuditHash:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	})
 
-	assert.False(t, ok)
+	assert.True(t, ok)
+	assert.NotEqual(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", next.AuditHash)
+	assert.Equal(t, auditHashForBalls(next.Balls), next.AuditHash)
+	assert.Equal(t, matchStatusAiming, next.Status)
 }
 
 func TestRematchStoreRequiresBothConfiguredPlayers(t *testing.T) {

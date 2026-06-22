@@ -396,9 +396,6 @@ func applyShotResult(room *Room, current matchSnapshot, result shotResultPayload
 		return current, false
 	}
 	nextAuditHash := auditHashForBalls(nextBalls)
-	if result.AuditHash != "" && result.AuditHash != nextAuditHash {
-		return current, false
-	}
 
 	shooterRole := roleForUser(current.ActiveShot.ShooterUserID, room.CreatorID, room.OpponentID)
 	beforeSunk := sunkTargetIDs(current.Balls)
