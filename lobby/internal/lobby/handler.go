@@ -88,8 +88,16 @@ func (h *Handler) CreateRoom(c *gin.Context) {
 		return
 	}
 
+	h.expireRoomsAndCleanup(c.Request.Context())
+
 	room, err := h.repo.CreateRoom(c.Request.Context(), userID.(string), req.IsPrivate)
 	if err != nil {
+		if errors.Is(err, ErrUserInActiveRoom) {
+			c.JSON(http.StatusConflict, httpx.ErrorResponse{
+				Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "Voce ja esta em uma partida ativa"},
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, httpx.ErrorResponse{
 			Error: httpx.ErrorDetail{Code: httpx.ErrCodeInternal, Message: err.Error()},
 		})
@@ -219,7 +227,13 @@ func (h *Handler) JoinRoom(c *gin.Context) {
 		}
 		if errors.Is(err, ErrRoomAlreadyJoined) {
 			c.JSON(http.StatusBadRequest, httpx.ErrorResponse{
-				Error: httpx.ErrorDetail{Code: httpx.ErrCodeValidationFailed, Message: "Voce e o criador desta sala e nao pode entrar como oponente"},
+				Error: httpx.ErrorDetail{Code: httpx.ErrCodeValidationFailed, Message: "Voce ja esta nesta sala"},
+			})
+			return
+		}
+		if errors.Is(err, ErrUserInActiveRoom) {
+			c.JSON(http.StatusConflict, httpx.ErrorResponse{
+				Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "Voce ja esta em uma partida ativa"},
 			})
 			return
 		}

@@ -138,10 +138,47 @@ func TestServerAppliesShotResultRulesFromCanonicalBallIDs(t *testing.T) {
 	assert.Equal(t, 0, next.Scores.Opponent)
 	assert.Equal(t, "creator-1", next.TurnUserID)
 	assert.Equal(t, current.TurnSeq+1, next.TurnSeq)
-	assert.Equal(t, int64(10_000), next.TurnDeadlineAtMS-next.TurnStartedAtMS)
+	assert.Equal(t, matchTurnDurationMS, next.TurnDeadlineAtMS-next.TurnStartedAtMS)
 	assert.Equal(t, matchStatusAiming, next.Status)
 	assert.Nil(t, next.ActiveShot)
 	assert.NotEmpty(t, next.AuditHash)
+}
+
+func TestServerMakesShooterLoseWhenBlackBallIsSunk(t *testing.T) {
+	opponentID := "opponent-1"
+	room := &Room{
+		ID:         "room-1",
+		CreatorID:  "creator-1",
+		OpponentID: &opponentID,
+	}
+	current := newInitialMatchSnapshot(room)
+	current.ShotSeq = 1
+	current.Status = matchStatusMoving
+	current.ActiveShot = &activeShotState{
+		ShotSeq:       1,
+		ShooterUserID: "creator-1",
+		Angle:         0.4,
+		Power:         50,
+	}
+
+	resultBalls := append([]matchBall(nil), current.Balls...)
+	for i := range resultBalls {
+		if resultBalls[i].ID == 8 {
+			resultBalls[i].Sunk = true
+		}
+	}
+
+	next, ok := applyShotResult(room, current, shotResultPayload{
+		ShotSeq:       1,
+		ShooterUserID: "creator-1",
+		Balls:         resultBalls,
+	})
+
+	assert.True(t, ok)
+	assert.Equal(t, "opponent-1", next.WinnerUserID)
+	assert.Equal(t, matchStatusFinished, next.Status)
+	assert.Equal(t, 0, next.Scores.Creator)
+	assert.Equal(t, 0, next.Scores.Opponent)
 }
 
 func TestInitialSnapshotStartsTimedTurn(t *testing.T) {
@@ -155,7 +192,7 @@ func TestInitialSnapshotStartsTimedTurn(t *testing.T) {
 	assert.Equal(t, 1, snapshot.TurnSeq)
 	assert.Equal(t, "creator-1", snapshot.TurnUserID)
 	assert.Equal(t, matchStatusAiming, snapshot.Status)
-	assert.Equal(t, int64(10_000), snapshot.TurnDeadlineAtMS-snapshot.TurnStartedAtMS)
+	assert.Equal(t, matchTurnDurationMS, snapshot.TurnDeadlineAtMS-snapshot.TurnStartedAtMS)
 }
 
 func TestApplyTurnTimeoutPassesTurnWithoutChangingTable(t *testing.T) {
@@ -168,10 +205,10 @@ func TestApplyTurnTimeoutPassesTurnWithoutChangingTable(t *testing.T) {
 	current := newInitialMatchSnapshot(room)
 	current.TurnSeq = 3
 	current.TurnStartedAtMS = 1_000
-	current.TurnDeadlineAtMS = 11_000
+	current.TurnDeadlineAtMS = current.TurnStartedAtMS + matchTurnDurationMS
 	current.UpdatedAtMS = 1_000
 
-	next, payload, ok := applyTurnTimeout(room, current, 11_000)
+	next, payload, ok := applyTurnTimeout(room, current, current.TurnDeadlineAtMS)
 
 	assert.True(t, ok)
 	assert.Equal(t, "opponent-1", next.TurnUserID)
@@ -184,7 +221,7 @@ func TestApplyTurnTimeoutPassesTurnWithoutChangingTable(t *testing.T) {
 	assert.Equal(t, "creator-1", payload.TimedOutUserID)
 	assert.Equal(t, "opponent-1", payload.NextTurnUserID)
 	assert.Equal(t, 4, payload.NextTurnSeq)
-	assert.Equal(t, int64(10_000), payload.TurnDeadlineAtMS-payload.TurnStartedAtMS)
+	assert.Equal(t, matchTurnDurationMS, payload.TurnDeadlineAtMS-payload.TurnStartedAtMS)
 }
 
 func TestServerRejectsShotResultFromWrongShooter(t *testing.T) {

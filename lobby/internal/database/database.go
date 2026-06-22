@@ -100,6 +100,7 @@ const migrationCreateIndexes = `
 CREATE INDEX IF NOT EXISTS idx_rooms_code ON rooms(code) WHERE code IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_rooms_status ON rooms(status);
 CREATE INDEX IF NOT EXISTS idx_rooms_creator ON rooms(creator_id);
+CREATE INDEX IF NOT EXISTS idx_rooms_opponent ON rooms(opponent_id) WHERE opponent_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_rooms_owner_disconnect ON rooms(creator_disconnected_at) WHERE creator_disconnected_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_rooms_opponent_disconnect ON rooms(opponent_disconnected_at) WHERE opponent_disconnected_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_room_match_states_updated ON room_match_states(updated_at);

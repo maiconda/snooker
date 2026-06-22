@@ -27,7 +27,7 @@ const (
 	randomPocketMinDistance    = matchPocketRadius * 3.4
 	randomPocketBallClearance  = matchPocketRadius + matchBallRadius*1.9
 
-	matchTurnDurationMS = int64(10_000)
+	matchTurnDurationMS = int64(20_000)
 )
 
 type matchScoreboard struct {
@@ -399,9 +399,15 @@ func applyShotResult(room *Room, current matchSnapshot, result shotResultPayload
 	beforeSunk := sunkTargetIDs(current.Balls)
 	nextScores := current.Scores
 	shooterSunkOwnBall := false
+	shooterSunkBlack := false
 
 	for _, ball := range nextBalls {
 		if ball.IsWhite || beforeSunk[ball.ID] || !ball.Sunk {
+			continue
+		}
+
+		if ball.ID == 8 {
+			shooterSunkBlack = true
 			continue
 		}
 
@@ -423,12 +429,16 @@ func applyShotResult(room *Room, current matchSnapshot, result shotResultPayload
 		}
 	}
 
-	winnerRole := resolveServerWinnerRole(nextBalls, nextScores, shooterRole)
 	nextWinnerUserID := ""
-	if winnerRole == "creator" {
-		nextWinnerUserID = room.CreatorID
-	} else if winnerRole == "opponent" && room.OpponentID != nil {
-		nextWinnerUserID = *room.OpponentID
+	if shooterSunkBlack {
+		nextWinnerUserID = opponentUserIDFor(current.ActiveShot.ShooterUserID, room)
+	} else {
+		winnerRole := resolveServerWinnerRole(nextBalls, nextScores, shooterRole)
+		if winnerRole == "creator" {
+			nextWinnerUserID = room.CreatorID
+		} else if winnerRole == "opponent" && room.OpponentID != nil {
+			nextWinnerUserID = *room.OpponentID
+		}
 	}
 
 	nextStatus := matchStatusAiming
@@ -537,6 +547,19 @@ func roleForUser(userID string, creatorID string, opponentID *string) string {
 	}
 	if opponentID != nil && userID == *opponentID {
 		return "opponent"
+	}
+	return ""
+}
+
+func opponentUserIDFor(userID string, room *Room) string {
+	if room == nil {
+		return ""
+	}
+	if userID == room.CreatorID && room.OpponentID != nil {
+		return *room.OpponentID
+	}
+	if room.OpponentID != nil && userID == *room.OpponentID {
+		return room.CreatorID
 	}
 	return ""
 }

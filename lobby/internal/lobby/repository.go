@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,6 +19,7 @@ var (
 	ErrRoomFull          = errors.New("sala ja esta cheia")
 	ErrRoomExpired       = errors.New("sala expirada")
 	ErrRoomAlreadyJoined = errors.New("voce ja esta nesta sala")
+	ErrUserInActiveRoom  = errors.New("usuario ja esta em uma partida ativa")
 )
 
 type LeaveRole string
@@ -67,8 +69,67 @@ func NewRepository(pool *pgxpool.Pool) Repository {
 	return &postgresRepository{pool: pool}
 }
 
+func (r *postgresRepository) userHasActiveRoomTx(ctx context.Context, tx pgx.Tx, userID string, excludeRoomID string) (bool, error) {
+	query := `
+		SELECT EXISTS (
+			SELECT 1
+			FROM rooms
+			WHERE status IN ('waiting', 'playing')
+				AND (creator_id = $1 OR opponent_id = $1)
+				AND ($2 = '' OR id::text <> $2)
+		)
+	`
+	var exists bool
+	if err := tx.QueryRow(ctx, query, userID, excludeRoomID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("falha ao verificar partida ativa do usuario: %w", err)
+	}
+	return exists, nil
+}
+
+func (r *postgresRepository) lockActiveRoomUsersTx(ctx context.Context, tx pgx.Tx, userIDs ...string) error {
+	uniqueUserIDs := make(map[string]struct{}, len(userIDs))
+	for _, userID := range userIDs {
+		if userID == "" {
+			continue
+		}
+		uniqueUserIDs[userID] = struct{}{}
+	}
+
+	orderedUserIDs := make([]string, 0, len(uniqueUserIDs))
+	for userID := range uniqueUserIDs {
+		orderedUserIDs = append(orderedUserIDs, userID)
+	}
+	sort.Strings(orderedUserIDs)
+
+	for _, userID := range orderedUserIDs {
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(753281, hashtext($1))", userID); err != nil {
+			return fmt.Errorf("falha ao bloquear partida ativa do usuario: %w", err)
+		}
+	}
+
+	return nil
+}
+
 func (r *postgresRepository) CreateRoom(ctx context.Context, creatorID string, isPrivate bool) (*Room, error) {
-	code, err := r.generateUniqueCode(ctx)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao iniciar transacao de criacao de sala: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := r.lockActiveRoomUsersTx(ctx, tx, creatorID); err != nil {
+		return nil, err
+	}
+
+	hasActiveRoom, err := r.userHasActiveRoomTx(ctx, tx, creatorID, "")
+	if err != nil {
+		return nil, err
+	}
+	if hasActiveRoom {
+		return nil, ErrUserInActiveRoom
+	}
+
+	code, err := r.generateUniqueCodeTx(ctx, tx)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao gerar codigo unico: %w", err)
 	}
@@ -83,7 +144,7 @@ func (r *postgresRepository) CreateRoom(ctx context.Context, creatorID string, i
 	`
 
 	var room Room
-	err = r.pool.QueryRow(ctx, query, code, creatorID, isPrivate, now, expiresAt).Scan(
+	err = tx.QueryRow(ctx, query, code, creatorID, isPrivate, now, expiresAt).Scan(
 		&room.ID,
 		&room.Code,
 		&room.CreatorID,
@@ -99,6 +160,10 @@ func (r *postgresRepository) CreateRoom(ctx context.Context, creatorID string, i
 	)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao inserir sala: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("falha ao commitar criacao de sala: %w", err)
 	}
 
 	return &room, nil
@@ -273,9 +338,21 @@ func (r *postgresRepository) JoinRoom(ctx context.Context, roomID string, oppone
 
 	if room.OpponentID != nil {
 		if *room.OpponentID == opponentID {
-			return &room, nil // Ja esta na sala
+			return nil, ErrRoomAlreadyJoined
 		}
 		return nil, ErrRoomFull
+	}
+
+	if err := r.lockActiveRoomUsersTx(ctx, tx, opponentID); err != nil {
+		return nil, err
+	}
+
+	hasActiveRoom, err := r.userHasActiveRoomTx(ctx, tx, opponentID, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if hasActiveRoom {
+		return nil, ErrUserInActiveRoom
 	}
 
 	queryUpdate := `
@@ -422,20 +499,21 @@ func (r *postgresRepository) ResetRoom(ctx context.Context, roomID string) (*Roo
 }
 
 func (r *postgresRepository) StartRematchRoom(ctx context.Context, roomID string) (*Room, error) {
-	query := `
-		UPDATE rooms
-		SET status = 'playing',
-			expires_at = NOW() + INTERVAL '10 minutes',
-			creator_disconnected_at = NULL,
-			opponent_disconnected_at = NULL
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao iniciar transacao de revanche: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	querySelect := `
+		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+		FROM rooms
 		WHERE id = $1
-			AND status = 'finished'
-			AND opponent_id IS NOT NULL
-		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+		FOR UPDATE
 	`
 
 	var room Room
-	err := r.pool.QueryRow(ctx, query, roomID).Scan(
+	err = tx.QueryRow(ctx, querySelect, roomID).Scan(
 		&room.ID,
 		&room.Code,
 		&room.CreatorID,
@@ -453,7 +531,57 @@ func (r *postgresRepository) StartRematchRoom(ctx context.Context, roomID string
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrRoomNotFound
 		}
-		return nil, fmt.Errorf("falha ao iniciar revanche da sala: %w", err)
+		return nil, fmt.Errorf("falha ao buscar sala para revanche: %w", err)
+	}
+	if room.Status != StatusFinished || room.OpponentID == nil {
+		return nil, ErrRoomNotFound
+	}
+
+	if err := r.lockActiveRoomUsersTx(ctx, tx, room.CreatorID, *room.OpponentID); err != nil {
+		return nil, err
+	}
+
+	creatorInOtherRoom, err := r.userHasActiveRoomTx(ctx, tx, room.CreatorID, room.ID)
+	if err != nil {
+		return nil, err
+	}
+	opponentInOtherRoom, err := r.userHasActiveRoomTx(ctx, tx, *room.OpponentID, room.ID)
+	if err != nil {
+		return nil, err
+	}
+	if creatorInOtherRoom || opponentInOtherRoom {
+		return nil, ErrUserInActiveRoom
+	}
+
+	queryUpdate := `
+		UPDATE rooms
+		SET status = 'playing',
+			expires_at = NOW() + INTERVAL '10 minutes',
+			creator_disconnected_at = NULL,
+			opponent_disconnected_at = NULL
+		WHERE id = $1
+		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+	`
+	err = tx.QueryRow(ctx, queryUpdate, roomID).Scan(
+		&room.ID,
+		&room.Code,
+		&room.CreatorID,
+		&room.OpponentID,
+		&room.Status,
+		&room.IsPrivate,
+		&room.CreatedAt,
+		&room.ExpiresAt,
+		&room.CreatorDisconnectedAt,
+		&room.OpponentDisconnectedAt,
+		&room.CreatorConnectionID,
+		&room.OpponentConnectionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao atualizar sala para revanche: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("falha ao commitar revanche: %w", err)
 	}
 
 	return &room, nil
@@ -901,7 +1029,7 @@ func (r *postgresRepository) DeleteMatchSnapshot(ctx context.Context, roomID str
 	return nil
 }
 
-func (r *postgresRepository) generateUniqueCode(ctx context.Context) (string, error) {
+func (r *postgresRepository) generateUniqueCodeTx(ctx context.Context, tx pgx.Tx) (string, error) {
 	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	for attempt := 0; attempt < 10; attempt++ {
 		code := make([]byte, 6)
@@ -917,7 +1045,7 @@ func (r *postgresRepository) generateUniqueCode(ctx context.Context) (string, er
 
 		// Verificar se ja existe
 		var exists bool
-		err := r.pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM rooms WHERE code = $1)", codeStr).Scan(&exists)
+		err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM rooms WHERE code = $1)", codeStr).Scan(&exists)
 		if err != nil {
 			return "", err
 		}

@@ -258,6 +258,23 @@ func TestHandler_CreateRoom(t *testing.T) {
 	repo.AssertExpectations(t)
 }
 
+func TestHandler_CreateRoomRejectsUserInActiveRoom(t *testing.T) {
+	repo := new(MockRepository)
+	router := setupTestRouter(repo)
+
+	repo.On("CreateRoom", mock.Anything, "user-123", false).Return(nil, ErrUserInActiveRoom)
+
+	body, _ := json.Marshal(CreateRoomRequest{IsPrivate: false})
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/rooms", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	repo.AssertExpectations(t)
+}
+
 func TestHandler_ListPublicRooms(t *testing.T) {
 	repo := new(MockRepository)
 	router := setupTestRouter(repo)
@@ -427,6 +444,31 @@ func TestHandler_JoinRoom(t *testing.T) {
 	assert.Equal(t, "room-uuid", resp.ID)
 	assert.Equal(t, "user-123", *resp.OpponentID)
 
+	repo.AssertExpectations(t)
+}
+
+func TestHandler_JoinRoomRejectsUserInActiveRoom(t *testing.T) {
+	repo := new(MockRepository)
+	router := setupTestRouter(repo)
+
+	code := "XYZ999"
+	roomBeforeJoin := &Room{
+		ID:        "room-uuid",
+		Code:      &code,
+		CreatorID: "user-creator",
+		Status:    StatusWaiting,
+		IsPrivate: false,
+	}
+
+	repo.On("GetRoomByID", mock.Anything, "room-uuid").Return(roomBeforeJoin, nil)
+	repo.On("JoinRoom", mock.Anything, "room-uuid", "user-123").Return(nil, ErrUserInActiveRoom)
+
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/rooms/room-uuid/join", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
 	repo.AssertExpectations(t)
 }
 
