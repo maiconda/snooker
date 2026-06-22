@@ -60,6 +60,7 @@ type TurnTimeoutPayload = {
   next_turn_user_id: string;
   next_turn_seq: number;
   turn_deadline_at_ms: number;
+  turn_started_at_ms?: number;
 };
 
 const CUE_SEND_INTERVAL_MS = 33;
@@ -183,6 +184,7 @@ export function GamePage({ roomId }: { roomId: string }) {
   const lastSnapshotVersionRef = useRef<SnapshotVersion>({ shotSeq: -1, updatedAtMs: 0 });
   const roomRef = useRef<Room | null>(null);
   const scoresRef = useRef<Scoreboard>(INITIAL_SCORES);
+  const clockOffsetRef = useRef(0);
   roomRef.current = room;
   scoresRef.current = scores;
 
@@ -258,7 +260,7 @@ export function GamePage({ roomId }: { roomId: string }) {
   }, [chatOpen]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 250);
+    const timer = window.setInterval(() => setNowMs(Date.now() - clockOffsetRef.current), 250);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -475,6 +477,11 @@ export function GamePage({ roomId }: { roomId: string }) {
               if (typeof timeoutPayload?.turn_deadline_at_ms === "number") {
                 setTurnDeadlineAtMs(timeoutPayload.turn_deadline_at_ms);
               }
+              if (typeof timeoutPayload?.turn_started_at_ms === "number") {
+                const offset = Date.now() - timeoutPayload.turn_started_at_ms;
+                clockOffsetRef.current = offset;
+                setNowMs(Date.now() - offset);
+              }
               break;
             }
 
@@ -484,6 +491,9 @@ export function GamePage({ roomId }: { roomId: string }) {
                 break;
               }
               if (snapshot?.updated_at_ms) {
+                const offset = Date.now() - snapshot.updated_at_ms;
+                clockOffsetRef.current = offset;
+                setNowMs(Date.now() - offset);
                 setIncomingSnapshot(snapshot);
               }
               setScores(snapshot.scores);

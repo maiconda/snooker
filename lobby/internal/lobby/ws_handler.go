@@ -1366,9 +1366,21 @@ func (h *Handler) handleTurnTimer(ctx context.Context, roomID string, turnSeq in
 		defer h.matchStateMu.Unlock()
 
 		snapshot, ok := h.getCanonicalSnapshot(ctx, roomID)
-		if !ok || snapshot.TurnSeq != turnSeq || !isTurnExpired(snapshot, time.Now().UnixMilli()) {
+		if !ok || snapshot.TurnSeq != turnSeq {
 			return false
 		}
+
+		now := time.Now().UnixMilli()
+		// Allow a 250ms buffer for early triggers; otherwise reschedule
+		if !isTurnExpired(snapshot, now+250) {
+			remaining := time.UnixMilli(snapshot.TurnDeadlineAtMS).Sub(time.Now())
+			if remaining < 100*time.Millisecond {
+				remaining = 100 * time.Millisecond
+			}
+			h.rescheduleTurnTimerAfter(roomID, snapshot, remaining)
+			return false
+		}
+
 		if h.repo == nil {
 			return false
 		}
@@ -1381,7 +1393,7 @@ func (h *Handler) handleTurnTimer(ctx context.Context, roomID string, turnSeq in
 			return false
 		}
 
-		next, timeoutPayload, ok := applyTurnTimeout(room, snapshot, time.Now().UnixMilli())
+		next, timeoutPayload, ok := applyTurnTimeout(room, snapshot, now)
 		if !ok || !h.storeCanonicalSnapshot(ctx, roomID, next) {
 			return false
 		}
