@@ -556,7 +556,7 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		return true
 
 	case "cue_state":
-		if !isParticipant || room.Status != StatusPlaying {
+		if !isParticipant || room.Status != StatusPlaying || roomHasReconnectingPlayer(room) {
 			return false
 		}
 		payload, ok := cueStatePayload(event.Payload, userID)
@@ -566,6 +566,7 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		snapshot, ok := h.getCanonicalSnapshot(ctx, room.ID)
 		if !ok ||
 			snapshot.Status != matchStatusAiming ||
+			isTurnExpired(snapshot, time.Now().UnixMilli()) ||
 			snapshot.TurnUserID != userID ||
 			(payload["match_id"] != "" && payload["match_id"] != room.ID) ||
 			payload["shot_seq"] != snapshot.ShotSeq {
@@ -579,7 +580,7 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		return true
 
 	case "shot_started":
-		if !isParticipant || room.Status != StatusPlaying {
+		if !isParticipant || room.Status != StatusPlaying || roomHasReconnectingPlayer(room) {
 			return false
 		}
 		intent, ok := parseShotIntent(event.Payload)
@@ -590,6 +591,9 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 			return false
 		}
 		var activeShot activeShotState
+		var timeoutSnapshot matchSnapshot
+		var timeoutPayload turnTimeoutPayload
+		var timedOut bool
 		started := func() bool {
 			h.matchStateMu.Lock()
 			defer h.matchStateMu.Unlock()
@@ -602,6 +606,17 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 				return false
 			}
 
+			now := time.Now().UnixMilli()
+			if isTurnExpired(snapshot, now) {
+				nextSnapshot, payload, ok := applyTurnTimeout(room, snapshot, now)
+				if ok && h.storeCanonicalSnapshot(ctx, room.ID, nextSnapshot) {
+					timeoutSnapshot = nextSnapshot
+					timeoutPayload = payload
+					timedOut = true
+				}
+				return false
+			}
+
 			nextSeq := snapshot.ShotSeq + 1
 			activeShot = activeShotState{
 				MatchID:           room.ID,
@@ -609,15 +624,22 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 				ShooterUserID:     userID,
 				Angle:             intent.Angle,
 				Power:             intent.Power,
-				ServerStartedAtMS: time.Now().UnixMilli(),
+				ServerStartedAtMS: now,
 			}
 			snapshot.ShotSeq = nextSeq
 			snapshot.Status = matchStatusMoving
+			snapshot.TurnStartedAtMS = 0
+			snapshot.TurnDeadlineAtMS = 0
 			snapshot.ActiveShot = &activeShot
-			snapshot.UpdatedAtMS = time.Now().UnixMilli()
+			snapshot.UpdatedAtMS = now
 			return h.storeCanonicalSnapshot(ctx, room.ID, snapshot)
 		}()
 		if !started {
+			if timedOut {
+				publishTurnTimeout(nc, room.ID, timeoutPayload)
+				publishCanonicalSnapshot(nc, room.ID, timeoutSnapshot)
+				return true
+			}
 			return false
 		}
 
@@ -700,6 +722,7 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		}
 		h.matchStateMu.Lock()
 		snapshot, ok := h.ensureCanonicalSnapshot(ctx, room)
+		h.syncTurnTimer(room.ID, snapshot)
 		h.matchStateMu.Unlock()
 		if !ok {
 			return false
@@ -1123,6 +1146,7 @@ func (h *Handler) clearCachedSnapshot(roomID string) {
 	if h.snapshots != nil {
 		delete(h.snapshots, roomID)
 	}
+	h.cancelTurnTimer(roomID)
 }
 
 func (h *Handler) getCanonicalSnapshot(ctx context.Context, roomID string) (matchSnapshot, bool) {
@@ -1168,10 +1192,11 @@ func parseCanonicalSnapshot(raw json.RawMessage) (matchSnapshot, bool) {
 	if snapshot.ShotSeq < 0 || snapshot.UpdatedAtMS <= 0 || snapshot.TurnUserID == "" || len(snapshot.Balls) == 0 {
 		return snapshot, false
 	}
-	return snapshot, true
+	return normalizeTurnClock(snapshot, time.Now().UnixMilli()), true
 }
 
 func (h *Handler) storeCanonicalSnapshot(ctx context.Context, roomID string, snapshot matchSnapshot) bool {
+	snapshot = normalizeTurnClock(snapshot, time.Now().UnixMilli())
 	if snapshot.UpdatedAtMS <= 0 {
 		snapshot.UpdatedAtMS = time.Now().UnixMilli()
 	}
@@ -1193,6 +1218,7 @@ func (h *Handler) storeCanonicalSnapshot(ctx context.Context, roomID string, sna
 			return false
 		}
 	}
+	h.syncTurnTimer(roomID, snapshot)
 	return true
 }
 
@@ -1217,4 +1243,139 @@ func publishCanonicalSnapshot(nc *nats.Conn, roomID string, snapshot matchSnapsh
 		return false
 	}
 	return true
+}
+
+func publishTurnTimeout(nc *nats.Conn, roomID string, payload turnTimeoutPayload) bool {
+	eventBytes, err := makeWSEvent("turn_timeout", "server", payload)
+	if err != nil {
+		log.Printf("falha ao serializar timeout de turno da sala %s: %v", roomID, err)
+		return false
+	}
+	if err := nc.Publish(natsclient.RoomEventsSubject(roomID), eventBytes); err != nil {
+		log.Printf("falha ao publicar timeout de turno da sala %s: %v", roomID, err)
+		return false
+	}
+	return true
+}
+
+func (h *Handler) cancelTurnTimer(roomID string) {
+	h.turnTimersMu.Lock()
+	defer h.turnTimersMu.Unlock()
+	if scheduled, ok := h.turnTimers[roomID]; ok {
+		scheduled.timer.Stop()
+		delete(h.turnTimers, roomID)
+	}
+}
+
+func (h *Handler) forgetTurnTimer(roomID string, turnSeq int) {
+	h.turnTimersMu.Lock()
+	defer h.turnTimersMu.Unlock()
+	if scheduled, ok := h.turnTimers[roomID]; ok && scheduled.turnSeq == turnSeq {
+		delete(h.turnTimers, roomID)
+	}
+}
+
+func (h *Handler) syncTurnTimer(roomID string, snapshot matchSnapshot) {
+	if snapshot.Status != matchStatusAiming || snapshot.WinnerUserID != "" || snapshot.TurnDeadlineAtMS <= 0 {
+		h.cancelTurnTimer(roomID)
+		return
+	}
+
+	turnSeq := snapshot.TurnSeq
+	deadlineMS := snapshot.TurnDeadlineAtMS
+	delay := time.Until(time.UnixMilli(deadlineMS))
+	if delay < 0 {
+		delay = 0
+	}
+
+	h.turnTimersMu.Lock()
+	defer h.turnTimersMu.Unlock()
+	if scheduled, ok := h.turnTimers[roomID]; ok {
+		if scheduled.turnSeq == turnSeq && scheduled.deadlineMS == deadlineMS {
+			return
+		}
+		scheduled.timer.Stop()
+	}
+
+	h.turnTimers[roomID] = &scheduledTurnTimer{
+		turnSeq:    turnSeq,
+		deadlineMS: deadlineMS,
+		timer: time.AfterFunc(delay, func() {
+			h.handleTurnTimer(context.Background(), roomID, turnSeq)
+		}),
+	}
+}
+
+func (h *Handler) rescheduleTurnTimerAfter(roomID string, snapshot matchSnapshot, delay time.Duration) {
+	if snapshot.Status != matchStatusAiming || snapshot.WinnerUserID != "" || snapshot.TurnDeadlineAtMS <= 0 {
+		h.cancelTurnTimer(roomID)
+		return
+	}
+
+	turnSeq := snapshot.TurnSeq
+	deadlineMS := snapshot.TurnDeadlineAtMS
+
+	h.turnTimersMu.Lock()
+	defer h.turnTimersMu.Unlock()
+	if scheduled, ok := h.turnTimers[roomID]; ok {
+		scheduled.timer.Stop()
+	}
+
+	h.turnTimers[roomID] = &scheduledTurnTimer{
+		turnSeq:    turnSeq,
+		deadlineMS: deadlineMS,
+		timer: time.AfterFunc(delay, func() {
+			h.handleTurnTimer(context.Background(), roomID, turnSeq)
+		}),
+	}
+}
+
+func (h *Handler) handleTurnTimer(ctx context.Context, roomID string, turnSeq int) {
+	h.forgetTurnTimer(roomID, turnSeq)
+
+	nc := natsclient.GetConn()
+	if nc == nil {
+		return
+	}
+
+	var nextSnapshot matchSnapshot
+	var payload turnTimeoutPayload
+	applied := func() bool {
+		h.matchStateMu.Lock()
+		defer h.matchStateMu.Unlock()
+
+		snapshot, ok := h.getCanonicalSnapshot(ctx, roomID)
+		if !ok || snapshot.TurnSeq != turnSeq || !isTurnExpired(snapshot, time.Now().UnixMilli()) {
+			return false
+		}
+		if h.repo == nil {
+			return false
+		}
+		room, err := h.repo.GetRoomByID(ctx, roomID)
+		if err != nil || room.Status != StatusPlaying {
+			return false
+		}
+		if roomHasReconnectingPlayer(room) {
+			h.rescheduleTurnTimerAfter(roomID, snapshot, time.Second)
+			return false
+		}
+
+		next, timeoutPayload, ok := applyTurnTimeout(room, snapshot, time.Now().UnixMilli())
+		if !ok || !h.storeCanonicalSnapshot(ctx, roomID, next) {
+			return false
+		}
+		nextSnapshot = next
+		payload = timeoutPayload
+		return true
+	}()
+	if !applied {
+		return
+	}
+
+	publishTurnTimeout(nc, roomID, payload)
+	publishCanonicalSnapshot(nc, roomID, nextSnapshot)
+}
+
+func roomHasReconnectingPlayer(room *Room) bool {
+	return room != nil && (room.CreatorDisconnectedAt != nil || room.OpponentDisconnectedAt != nil)
 }

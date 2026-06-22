@@ -137,9 +137,54 @@ func TestServerAppliesShotResultRulesFromCanonicalBallIDs(t *testing.T) {
 	assert.Equal(t, 10, next.Scores.Creator)
 	assert.Equal(t, 0, next.Scores.Opponent)
 	assert.Equal(t, "creator-1", next.TurnUserID)
+	assert.Equal(t, current.TurnSeq+1, next.TurnSeq)
+	assert.Equal(t, int64(10_000), next.TurnDeadlineAtMS-next.TurnStartedAtMS)
 	assert.Equal(t, matchStatusAiming, next.Status)
 	assert.Nil(t, next.ActiveShot)
 	assert.NotEmpty(t, next.AuditHash)
+}
+
+func TestInitialSnapshotStartsTimedTurn(t *testing.T) {
+	room := &Room{
+		ID:        "room-1",
+		CreatorID: "creator-1",
+	}
+
+	snapshot := newInitialMatchSnapshot(room)
+
+	assert.Equal(t, 1, snapshot.TurnSeq)
+	assert.Equal(t, "creator-1", snapshot.TurnUserID)
+	assert.Equal(t, matchStatusAiming, snapshot.Status)
+	assert.Equal(t, int64(10_000), snapshot.TurnDeadlineAtMS-snapshot.TurnStartedAtMS)
+}
+
+func TestApplyTurnTimeoutPassesTurnWithoutChangingTable(t *testing.T) {
+	opponentID := "opponent-1"
+	room := &Room{
+		ID:         "room-1",
+		CreatorID:  "creator-1",
+		OpponentID: &opponentID,
+	}
+	current := newInitialMatchSnapshot(room)
+	current.TurnSeq = 3
+	current.TurnStartedAtMS = 1_000
+	current.TurnDeadlineAtMS = 11_000
+	current.UpdatedAtMS = 1_000
+
+	next, payload, ok := applyTurnTimeout(room, current, 11_000)
+
+	assert.True(t, ok)
+	assert.Equal(t, "opponent-1", next.TurnUserID)
+	assert.Equal(t, 4, next.TurnSeq)
+	assert.Equal(t, matchStatusAiming, next.Status)
+	assert.Equal(t, current.ShotSeq, next.ShotSeq)
+	assert.Equal(t, current.Scores, next.Scores)
+	assert.Equal(t, current.Balls, next.Balls)
+	assert.Equal(t, current.Pockets, next.Pockets)
+	assert.Equal(t, "creator-1", payload.TimedOutUserID)
+	assert.Equal(t, "opponent-1", payload.NextTurnUserID)
+	assert.Equal(t, 4, payload.NextTurnSeq)
+	assert.Equal(t, int64(10_000), payload.TurnDeadlineAtMS-payload.TurnStartedAtMS)
 }
 
 func TestServerRejectsShotResultFromWrongShooter(t *testing.T) {

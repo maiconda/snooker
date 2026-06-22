@@ -26,6 +26,14 @@ type Handler struct {
 	matchStateMu           sync.Mutex
 	snapshotsMu            sync.RWMutex
 	snapshots              map[string]json.RawMessage
+	turnTimersMu           sync.Mutex
+	turnTimers             map[string]*scheduledTurnTimer
+}
+
+type scheduledTurnTimer struct {
+	turnSeq    int
+	deadlineMS int64
+	timer      *time.Timer
 }
 
 type HandlerOption func(*Handler)
@@ -55,6 +63,7 @@ func NewHandler(repo Repository, opts ...HandlerOption) *Handler {
 		rematches:              newRematchStore(),
 		xpAwarder:              noopMatchXPAwarder{},
 		snapshots:              make(map[string]json.RawMessage),
+		turnTimers:             make(map[string]*scheduledTurnTimer),
 	}
 	for _, opt := range opts {
 		opt(h)

@@ -37,6 +37,9 @@ export type MatchSnapshot = {
   pockets: Pocket[];
   scores: Scoreboard;
   turn_user_id: string;
+  turn_seq: number;
+  turn_started_at_ms?: number;
+  turn_deadline_at_ms?: number;
   shot_seq: number;
   status: MatchStatus;
   winner_user_id?: string;
@@ -562,11 +565,23 @@ export function SnookerMatch({
       return;
     }
 
+    const previousTurnUserId = turnUserIdRef.current;
+    const turnChanged = incomingSnapshot.turn_user_id !== previousTurnUserId;
     lastIncomingSnapshotAtRef.current = incomingSnapshot.updated_at_ms;
 
     ballsRef.current = cloneBalls(incomingSnapshot.balls);
     shotSeqRef.current = incomingSnapshot.shot_seq;
     pendingShotRef.current = null;
+
+    if (incomingSnapshot.status === "aiming" && turnChanged) {
+      aimAngleRef.current = 0;
+      aimVelocityRef.current = 0;
+      aimInputRef.current.left = false;
+      aimInputRef.current.right = false;
+      aimInputRef.current.fine = false;
+      setAimAngle(0);
+      setPower(50);
+    }
 
     transitionToPockets(incomingSnapshot.pockets, false);
     setBalls([...ballsRef.current]);

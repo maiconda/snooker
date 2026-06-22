@@ -54,6 +54,14 @@ type MatchSummary = {
   xpAwards: XPAward[];
 };
 
+type TurnTimeoutPayload = {
+  turn_seq: number;
+  timed_out_user_id: string;
+  next_turn_user_id: string;
+  next_turn_seq: number;
+  turn_deadline_at_ms: number;
+};
+
 const CUE_SEND_INTERVAL_MS = 33;
 const INITIAL_SCORES: Scoreboard = { creator: 0, opponent: 0 };
 
@@ -150,6 +158,8 @@ export function GamePage({ roomId }: { roomId: string }) {
   const [incomingSnapshot, setIncomingSnapshot] = useState<MatchSnapshot | null>(null);
   const [scores, setScores] = useState<Scoreboard>(INITIAL_SCORES);
   const [turnUserId, setTurnUserId] = useState("");
+  const [turnDeadlineAtMs, setTurnDeadlineAtMs] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [hud, setHud] = useState<MatchHudState>({
     angle: 0,
     power: 50,
@@ -190,6 +200,18 @@ export function GamePage({ roomId }: { roomId: string }) {
   const opponentDisconnected = Boolean(room?.opponent_disconnected_at);
   const hasReconnectingPlayer = creatorDisconnected || opponentDisconnected;
   const currentUserRequestedRematch = requestedRematches.includes(userId);
+  const turnRemainingMs =
+    turnDeadlineAtMs > 0 && hud.status === "aiming" && !hasReconnectingPlayer
+      ? Math.max(0, turnDeadlineAtMs - nowMs)
+      : 0;
+  const turnExpired =
+    !hasReconnectingPlayer && turnDeadlineAtMs > 0 && hud.status === "aiming" && nowMs >= turnDeadlineAtMs;
+  const turnRemainingText =
+    hasReconnectingPlayer && turnDeadlineAtMs > 0 && hud.status === "aiming"
+      ? "Pausado"
+      : turnDeadlineAtMs > 0 && hud.status === "aiming"
+        ? `${Math.max(0, Math.ceil(turnRemainingMs / 1000))}s`
+        : "--";
 
   const xpByUserId = useMemo(() => {
     const result: Record<string, XPAward> = {};
@@ -236,11 +258,17 @@ export function GamePage({ roomId }: { roomId: string }) {
   }, [chatOpen]);
 
   useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     lastSnapshotVersionRef.current = { shotSeq: -1, updatedAtMs: 0 };
     lastCueVersionBySender.current = {};
     clientSeqRef.current = 0;
     lastCueSentAtRef.current = 0;
     setRemoteCue(null);
+    setTurnDeadlineAtMs(0);
   }, [roomId]);
 
   useEffect(() => {
@@ -431,8 +459,22 @@ export function GamePage({ roomId }: { roomId: string }) {
 
             case "shot_started":
               setRemoteCue(null);
+              setTurnDeadlineAtMs(0);
               setIncomingShot(rawPayload as ShotStartedEvent);
               break;
+
+            case "turn_timeout": {
+              const timeoutPayload = rawPayload as TurnTimeoutPayload;
+              setRemoteCue(null);
+              setIncomingShot(null);
+              if (timeoutPayload?.next_turn_user_id) {
+                setTurnUserId(timeoutPayload.next_turn_user_id);
+              }
+              if (typeof timeoutPayload?.turn_deadline_at_ms === "number") {
+                setTurnDeadlineAtMs(timeoutPayload.turn_deadline_at_ms);
+              }
+              break;
+            }
 
             case "game_state_sync": {
               const snapshot = rawPayload as MatchSnapshot;
@@ -443,6 +485,11 @@ export function GamePage({ roomId }: { roomId: string }) {
                 setIncomingSnapshot(snapshot);
               }
               setScores(snapshot.scores);
+              setTurnDeadlineAtMs(
+                snapshot.status === "aiming" && typeof snapshot.turn_deadline_at_ms === "number"
+                  ? snapshot.turn_deadline_at_ms
+                  : 0
+              );
               if (snapshot?.turn_user_id) {
                 setTurnUserId(snapshot.turn_user_id);
                 setRemoteCue((current) =>
@@ -467,6 +514,7 @@ export function GamePage({ roomId }: { roomId: string }) {
               if (nextRoom) {
                 setRoom(nextRoom);
               }
+              setTurnDeadlineAtMs(0);
               setMatchSummary((prev) => ({
                 winnerUserId: matchPayload.winner_user_id ?? prev?.winnerUserId,
                 scores: matchPayload.scores ?? prev?.scores ?? scoresRef.current,
@@ -488,6 +536,7 @@ export function GamePage({ roomId }: { roomId: string }) {
                 setIncomingSnapshot(null);
                 setIncomingShot(null);
                 setRemoteCue(null);
+                setTurnDeadlineAtMs(0);
                 lastCueVersionBySender.current = {};
                 clientSeqRef.current = 0;
                 lastCueSentAtRef.current = 0;
@@ -506,6 +555,7 @@ export function GamePage({ roomId }: { roomId: string }) {
                 setIncomingSnapshot(null);
                 setIncomingShot(null);
                 setRemoteCue(null);
+                setTurnDeadlineAtMs(0);
                 lastCueVersionBySender.current = {};
                 clientSeqRef.current = 0;
                 lastCueSentAtRef.current = 0;
@@ -643,7 +693,7 @@ export function GamePage({ roomId }: { roomId: string }) {
           remoteCue={remoteCue}
           incomingShot={incomingShot}
           incomingSnapshot={incomingSnapshot}
-          disabled={hasReconnectingPlayer || room.status === "finished"}
+          disabled={hasReconnectingPlayer || room.status === "finished" || turnExpired}
           resetKey={resetKey}
           onCueState={sendCueState}
           onLocalShotStarted={handleLocalShotStarted}
@@ -685,6 +735,7 @@ export function GamePage({ roomId }: { roomId: string }) {
 
           <div className="flex flex-wrap items-stretch gap-2 md:justify-end">
             <StatusPill label="Turno" value={activeName} />
+            <StatusPill label="Tempo" value={turnRemainingText} />
             <StatusPill label="Status" value={statusText(hud.status, room.status)} />
             <StatusPill label="Forca" value={`${Math.round(hud.power)}%`} />
             <StatusPill label="Espectadores" value={String(spectators)} />
