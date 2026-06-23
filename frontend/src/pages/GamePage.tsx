@@ -940,7 +940,7 @@ export function GamePage({ roomId }: { roomId: string }) {
       </div>
 
       {hasReconnectingPlayer && (
-        <div className="pointer-events-none absolute left-1/2 top-36 z-30 w-[min(92vw,720px)] -translate-x-1/2 border border-amber-400/20 bg-amber-500/10 px-4 py-3 rounded-xl text-xs font-semibold text-amber-300 shadow-xl backdrop-blur-md text-center animate-pulse">
+        <div className="pointer-events-none absolute left-1/2 top-36 z-30 w-[min(92vw,720px)] -translate-x-1/2 border border-red-500/20 bg-red-500/10 px-4 py-3 rounded-xl text-xs font-semibold text-red-450 dark:text-red-400 shadow-xl backdrop-blur-md text-center animate-pulse">
           {creatorDisconnected && opponentDisconnected
             ? "Os dois jogadores estão reconectando. A partida fica pausada para manter a simulação consistente."
             : `${creatorDisconnected ? creatorName : opponentName} está reconectando. A sala permanece viva enquanto aguardamos o retorno.`}
@@ -1120,7 +1120,7 @@ function ScoreTile({
           <span className="truncate text-[9px] uppercase tracking-[0.2em] text-neutral-550 dark:text-neutral-500 font-bold">{label}</span>
         </div>
         <span className={`text-[9px] font-bold tracking-wider uppercase ${
-          reconnecting ? "text-amber-400 animate-pulse" : active ? "text-red-600 dark:text-red-400 animate-pulse" : "text-neutral-500"
+          reconnecting ? "text-red-600 dark:text-red-400 animate-pulse" : active ? "text-red-600 dark:text-red-400 animate-pulse" : "text-neutral-500"
         }`}>
           {reconnecting ? "Recon." : active ? "Turno" : xpAward ? `+${xpAward.xp_delta} XP` : "Online"}
         </span>
