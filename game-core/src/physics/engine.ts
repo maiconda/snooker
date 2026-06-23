@@ -42,6 +42,7 @@ const STOP_SPEED = 0.003;
 const STOP_SPIN = 0.08;
 const SLIP_TO_ROLLING_THRESHOLD = 0.018;
 const SINK_ANIMATION_SECONDS = 0.42;
+const CANONICAL_STATE_SCALE = 1_000_000;
 const RANDOM_POCKET_COUNT = 3;
 const RANDOM_POCKET_ATTEMPTS = 900;
 const RANDOM_POCKET_PLACEMENT_RADIUS = TABLE_RADIUS - POCKET_RADIUS * 1.7;
@@ -209,6 +210,27 @@ function stopBall(ball: Ball): void {
   ball.vy = 0;
   ball.spinX = 0;
   ball.spinY = 0;
+}
+
+function canonicalNumber(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const rounded = Math.round(value * CANONICAL_STATE_SCALE) / CANONICAL_STATE_SCALE;
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function canonicalizeBall(ball: Ball): void {
+  ball.x = canonicalNumber(ball.x) ?? ball.x;
+  ball.y = canonicalNumber(ball.y) ?? ball.y;
+  ball.vx = canonicalNumber(ball.vx) ?? ball.vx;
+  ball.vy = canonicalNumber(ball.vy) ?? ball.vy;
+  ball.spinX = canonicalNumber(ball.spinX) ?? ball.spinX;
+  ball.spinY = canonicalNumber(ball.spinY) ?? ball.spinY;
+
+  ball.sinkProgress = canonicalNumber(ball.sinkProgress);
+  ball.sinkStartX = canonicalNumber(ball.sinkStartX);
+  ball.sinkStartY = canonicalNumber(ball.sinkStartY);
+  ball.sinkX = canonicalNumber(ball.sinkX);
+  ball.sinkY = canonicalNumber(ball.sinkY);
 }
 
 function clampMagnitude(value: number, maxDelta: number): number {
@@ -397,6 +419,10 @@ export function stepSimulation(balls: Ball[], dt: number, pockets: Pocket[] = PO
         }
       }
     }
+  }
+
+  for (const ball of balls) {
+    canonicalizeBall(ball);
   }
 }
 

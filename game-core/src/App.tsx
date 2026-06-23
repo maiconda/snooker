@@ -42,9 +42,9 @@ const AIM_HUD_UPDATE_INTERVAL = 0.08;
 const POWER_STEP = 5;
 const POWER_FINE_STEP = 1;
 const POCKET_TRANSITION_MS = 560;
-const PHYSICS_BASE_SUBSTEPS = 4;
-const PHYSICS_MAX_SUBSTEPS = 8;
-const PHYSICS_TARGET_STEP_DISTANCE = BALL_RADIUS * 0.45;
+const PHYSICS_FIXED_STEP_SECONDS = 1 / 240;
+const PHYSICS_MAX_FRAME_DELTA_SECONDS = 0.1;
+const PHYSICS_MAX_TICKS_PER_FRAME = 24;
 const CUE_RESPAWN_CLEARANCE = BALL_RADIUS * 2.45;
 
 type AimInputState = {
@@ -55,15 +55,6 @@ type AimInputState = {
 
 function clampPower(value: number): number {
   return Math.min(100, Math.max(0, value));
-}
-
-function getMaxBallSpeed(balls: Ball[]): number {
-  return balls.reduce((maxSpeed, ball) => {
-    if (ball.sunk || ball.sinking) return maxSpeed;
-
-    const speed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
-    return Math.max(maxSpeed, speed);
-  }, 0);
 }
 
 function isCueRespawnPositionFree(
@@ -114,27 +105,39 @@ function SimulationLoop({
   setIsAiming,
   onSimulationStopped
 }: SimulationLoopProps) {
+  const accumulatorRef = useRef(0);
+  const wasAimingRef = useRef(true);
+
   useFrame((_, delta) => {
-    if (isAiming) return;
-
-    const cappedDelta = Math.min(delta, 0.03);
-    const maxSpeed = getMaxBallSpeed(ballsRef.current);
-    const adaptiveSubsteps = Math.ceil(
-      (maxSpeed * cappedDelta) / PHYSICS_TARGET_STEP_DISTANCE
-    );
-    const substeps = Math.min(
-      PHYSICS_MAX_SUBSTEPS,
-      Math.max(PHYSICS_BASE_SUBSTEPS, adaptiveSubsteps)
-    );
-    const subDt = cappedDelta / substeps;
-
-    for (let i = 0; i < substeps; i++) {
-      stepSimulation(ballsRef.current, subDt, pocketsRef.current);
+    if (isAiming) {
+      accumulatorRef.current = 0;
+      wasAimingRef.current = true;
+      return;
     }
 
-    if (isStatic(ballsRef.current)) {
-      setIsAiming(true);
-      onSimulationStopped();
+    if (wasAimingRef.current) {
+      accumulatorRef.current = 0;
+      wasAimingRef.current = false;
+    }
+
+    accumulatorRef.current += Math.min(delta, PHYSICS_MAX_FRAME_DELTA_SECONDS);
+
+    let ticksThisFrame = 0;
+    while (
+      accumulatorRef.current >= PHYSICS_FIXED_STEP_SECONDS &&
+      ticksThisFrame < PHYSICS_MAX_TICKS_PER_FRAME
+    ) {
+      stepSimulation(ballsRef.current, PHYSICS_FIXED_STEP_SECONDS, pocketsRef.current);
+      accumulatorRef.current -= PHYSICS_FIXED_STEP_SECONDS;
+      ticksThisFrame++;
+
+      if (isStatic(ballsRef.current)) {
+        accumulatorRef.current = 0;
+        wasAimingRef.current = true;
+        setIsAiming(true);
+        onSimulationStopped();
+        break;
+      }
     }
   });
 

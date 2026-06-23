@@ -126,11 +126,12 @@ const AIM_HUD_UPDATE_INTERVAL = 0.033;
 const POWER_STEP = 5;
 const POWER_FINE_STEP = 1;
 const POCKET_TRANSITION_MS = 560;
-const PHYSICS_BASE_SUBSTEPS = 4;
-const PHYSICS_MAX_SUBSTEPS = 8;
-const PHYSICS_TARGET_STEP_DISTANCE = BALL_RADIUS * 0.45;
+const PHYSICS_FIXED_STEP_SECONDS = 1 / 240;
+const PHYSICS_MAX_FRAME_DELTA_SECONDS = 0.1;
+const PHYSICS_MAX_TICKS_PER_FRAME = 24;
 const CUE_RESPAWN_CLEARANCE = BALL_RADIUS * 2.45;
 const CUE_SEND_INTERVAL_MS = 33;
+const AUDIT_POSITION_SCALE = 10_000;
 
 function clampPower(value: number): number {
   return Math.min(100, Math.max(0, value));
@@ -181,13 +182,51 @@ function snapshotStatusRank(status?: MatchStatus): number {
   }
 }
 
-function getMaxBallSpeed(balls: Ball[]): number {
-  return balls.reduce((maxSpeed, ball) => {
-    if (ball.sunk || ball.sinking) return maxSpeed;
+function auditPosition(value: number): number {
+  const rounded = Math.round(value * AUDIT_POSITION_SCALE) / AUDIT_POSITION_SCALE;
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
 
-    const speed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
-    return Math.max(maxSpeed, speed);
-  }, 0);
+function hasSameAuditedBallState(current: Ball[], next: Ball[]): boolean {
+  if (current.length !== next.length) return false;
+
+  const currentById = new Map(current.map((ball) => [ball.id, ball]));
+  for (const nextBall of next) {
+    const currentBall = currentById.get(nextBall.id);
+    if (!currentBall) return false;
+    if (currentBall.sunk !== nextBall.sunk) return false;
+    if (auditPosition(currentBall.x) !== auditPosition(nextBall.x)) return false;
+    if (auditPosition(currentBall.y) !== auditPosition(nextBall.y)) return false;
+  }
+
+  return true;
+}
+
+function alignLocalBallsToSnapshot(current: Ball[], snapshotBalls: Ball[]): Ball[] {
+  const currentById = new Map(current.map((ball) => [ball.id, ball]));
+
+  return snapshotBalls.map((snapshotBall) => {
+    const localBall = currentById.get(snapshotBall.id);
+    if (!localBall) return { ...snapshotBall };
+
+    localBall.vx = snapshotBall.vx;
+    localBall.vy = snapshotBall.vy;
+    localBall.spinX = snapshotBall.spinX;
+    localBall.spinY = snapshotBall.spinY;
+    localBall.radius = snapshotBall.radius;
+    localBall.isWhite = snapshotBall.isWhite;
+    localBall.sunk = snapshotBall.sunk;
+    localBall.sinking = snapshotBall.sinking;
+    localBall.sinkProgress = snapshotBall.sinkProgress;
+    localBall.sinkStartX = snapshotBall.sinkStartX;
+    localBall.sinkStartY = snapshotBall.sinkStartY;
+    localBall.sinkX = snapshotBall.sinkX;
+    localBall.sinkY = snapshotBall.sinkY;
+    localBall.color = snapshotBall.color;
+    localBall.owner = snapshotBall.owner;
+    localBall.points = snapshotBall.points;
+    return localBall;
+  });
 }
 
 function isCueRespawnPositionFree(
@@ -238,27 +277,39 @@ function SimulationLoop({
   setIsAiming,
   onSimulationStopped
 }: SimulationLoopProps) {
+  const accumulatorRef = useRef(0);
+  const wasAimingRef = useRef(true);
+
   useFrame((_, delta) => {
-    if (isAiming) return;
-
-    const cappedDelta = Math.min(delta, 0.03);
-    const maxSpeed = getMaxBallSpeed(ballsRef.current);
-    const adaptiveSubsteps = Math.ceil(
-      (maxSpeed * cappedDelta) / PHYSICS_TARGET_STEP_DISTANCE
-    );
-    const substeps = Math.min(
-      PHYSICS_MAX_SUBSTEPS,
-      Math.max(PHYSICS_BASE_SUBSTEPS, adaptiveSubsteps)
-    );
-    const subDt = cappedDelta / substeps;
-
-    for (let i = 0; i < substeps; i++) {
-      stepSimulation(ballsRef.current, subDt, pocketsRef.current);
+    if (isAiming) {
+      accumulatorRef.current = 0;
+      wasAimingRef.current = true;
+      return;
     }
 
-    if (isStatic(ballsRef.current)) {
-      setIsAiming(true);
-      onSimulationStopped();
+    if (wasAimingRef.current) {
+      accumulatorRef.current = 0;
+      wasAimingRef.current = false;
+    }
+
+    accumulatorRef.current += Math.min(delta, PHYSICS_MAX_FRAME_DELTA_SECONDS);
+
+    let ticksThisFrame = 0;
+    while (
+      accumulatorRef.current >= PHYSICS_FIXED_STEP_SECONDS &&
+      ticksThisFrame < PHYSICS_MAX_TICKS_PER_FRAME
+    ) {
+      stepSimulation(ballsRef.current, PHYSICS_FIXED_STEP_SECONDS, pocketsRef.current);
+      accumulatorRef.current -= PHYSICS_FIXED_STEP_SECONDS;
+      ticksThisFrame++;
+
+      if (isStatic(ballsRef.current)) {
+        accumulatorRef.current = 0;
+        wasAimingRef.current = true;
+        setIsAiming(true);
+        onSimulationStopped();
+        break;
+      }
     }
   });
 
@@ -633,7 +684,14 @@ export function SnookerMatch({
     const turnChanged = incomingSnapshot.turn_user_id !== previousTurnUserId;
     lastIncomingSnapshotVersionRef.current = nextSnapshotVersion;
 
-    ballsRef.current = cloneBalls(incomingSnapshot.balls);
+    const snapshotBalls = cloneBalls(incomingSnapshot.balls);
+    const canPreserveLocalPositions = hasSameAuditedBallState(
+      ballsRef.current,
+      snapshotBalls
+    );
+    ballsRef.current = canPreserveLocalPositions
+      ? alignLocalBallsToSnapshot(ballsRef.current, snapshotBalls)
+      : snapshotBalls;
     shotSeqRef.current = incomingSnapshot.shot_seq;
     pendingShotRef.current = null;
 

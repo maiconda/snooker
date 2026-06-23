@@ -721,29 +721,31 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
                 <h2 className="text-lg font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-300">Jogadores online</h2>
                 <span className="rounded-full bg-neutral-200 dark:bg-white/10 px-2.5 py-0.5 text-base font-bold text-neutral-650 dark:text-neutral-400">{onlineInviteCandidates.length}</span>
               </div>
-              <div className="mt-4 space-y-2 max-h-[160px] overflow-y-auto pr-1">
+              <div className="mt-4 space-y-2 max-h-[260px] overflow-y-auto pr-1">
                 {onlineInviteCandidates.length === 0 ? (
-                  <p className="text-base text-neutral-500 dark:text-neutral-605 font-medium">Nenhum jogador online disponível para convite.</p>
+                  <p className="text-base text-neutral-550 dark:text-neutral-500 font-medium">Nenhum jogador online disponível para convite.</p>
                 ) : (
                   onlineInviteCandidates.map((user) => {
                     const status = inviteStatuses[user.user_id];
                     const wasInvited = Boolean(status && status !== "Enviando..." && !status.startsWith("Falha") && !status.startsWith("Usuario"));
                     return (
-                      <div key={user.user_id} className="flex items-center justify-between gap-3 rounded-lg bg-neutral-100/50 dark:bg-white/[0.02] border border-neutral-200 dark:border-white/5 px-3 py-2">
+                      <div key={user.user_id} className="flex flex-col gap-2 rounded-xl bg-neutral-100/50 dark:bg-white/[0.02] border border-neutral-200 dark:border-white/5 p-3 shadow-sm">
                         <div className="flex min-w-0 items-center gap-3">
                           {profilesById[user.user_id]?.photo_url ? (
                             <img
                               src={profilesById[user.user_id]?.photo_url}
                               alt={profilesById[user.user_id]?.nickname ?? "Jogador"}
-                              className="h-8 w-8 rounded-lg object-cover"
+                              className="h-8 w-8 rounded-lg object-cover shrink-0"
                             />
                           ) : (
-                            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-200 dark:bg-neutral-800 text-sm font-semibold text-neutral-650 dark:text-neutral-300">
+                            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-200 dark:bg-neutral-800 text-xs font-bold text-neutral-650 dark:text-neutral-300 shrink-0">
                               {(profilesById[user.user_id]?.nickname ?? "ON").substring(0, 2).toUpperCase()}
                             </div>
                           )}
-                          <div className="min-w-0">
-                            <p className="truncate text-base text-neutral-800 dark:text-neutral-200 font-semibold">{profilesById[user.user_id]?.nickname ?? "Carregando..."}</p>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-base text-neutral-800 dark:text-neutral-200 font-semibold" title={profilesById[user.user_id]?.nickname}>
+                              {profilesById[user.user_id]?.nickname ?? "Carregando..."}
+                            </p>
                             {status && !wasInvited && status !== "Enviando..." && (
                               <p className="truncate text-xs text-red-500 dark:text-red-405">{status}</p>
                             )}
@@ -753,7 +755,7 @@ export function LobbyRoomPage({ roomId }: { roomId: string }) {
                           onClick={() => handleInviteUser(user.user_id)}
                           disabled={!roomHasInviteSlot || status === "Enviando..." || wasInvited}
                           variant="outline"
-                          className="px-3.5 py-2 text-sm w-auto h-9 font-bold"
+                          className="w-full text-xs py-1.5 h-8 font-bold"
                         >
                           {status === "Enviando..." ? "Enviando" : wasInvited ? "Convidado" : "Convidar"}
                         </Button>

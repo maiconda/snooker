@@ -202,6 +202,23 @@ export function GamePage({ roomId }: { roomId: string }) {
   const [matchSummary, setMatchSummary] = useState<MatchSummary | null>(null);
   const [requestedRematches, setRequestedRematches] = useState<string[]>([]);
   const [resetKey, setResetKey] = useState(roomId);
+  const [activeToast, setActiveToast] = useState<{ id: string; sender: string; text: string } | null>(null);
+  const isReadyForToasts = useRef(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      isReadyForToasts.current = true;
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!activeToast) return;
+    const timer = setTimeout(() => {
+      setActiveToast(null);
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [activeToast]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -470,6 +487,13 @@ export function GamePage({ roomId }: { roomId: string }) {
               ]);
               if (!chatOpenRef.current) {
                 setUnreadMessages((current) => current + 1);
+                if (isReadyForToasts.current) {
+                  setActiveToast({
+                    id: messageId,
+                    sender: senderName,
+                    text: chatText
+                  });
+                }
               }
               break;
             }
@@ -912,11 +936,6 @@ export function GamePage({ roomId }: { roomId: string }) {
           <svg className="h-5 w-5 text-neutral-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
           </svg>
-          {unreadMessages > 0 && !chatOpen && (
-            <span className="absolute -top-1.5 -right-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-black text-white shadow-md animate-pulse">
-              {unreadMessages}
-            </span>
-          )}
         </button>
       </div>
 
@@ -1052,6 +1071,17 @@ export function GamePage({ roomId }: { roomId: string }) {
           onLeave={() => navigate("/")}
           onLobby={() => navigate(`/sala/${room.id}`)}
         />
+      )}
+      {/* Balão de mensagem recebida na hora */}
+      {activeToast && (
+        <div className="fixed bottom-6 right-6 z-40 max-w-sm rounded-2xl border border-white/10 bg-zinc-950/90 p-4 text-white shadow-2xl backdrop-blur-xl animate-fade-in flex flex-col gap-1 transition-all duration-300">
+          <span className="text-[10px] uppercase tracking-[0.2em] font-extrabold text-red-400">
+            {activeToast.sender}
+          </span>
+          <p className="text-sm font-semibold text-neutral-100">
+            {activeToast.text}
+          </p>
+        </div>
       )}
     </main>
   );
