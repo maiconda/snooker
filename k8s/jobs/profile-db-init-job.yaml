@@ -1,0 +1,76 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: profile-db-init
+  namespace: snooker
+  labels:
+    app.kubernetes.io/name: profile-db-init
+    app.kubernetes.io/component: job
+    app.kubernetes.io/part-of: snooker
+  annotations:
+    snooker.maiconda.com/extra-points: "4.2 Job for database initialization."
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: profile-db-init
+        app.kubernetes.io/component: job
+        app.kubernetes.io/part-of: snooker
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: snooker-job
+      containers:
+        - name: profile-db-init
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - /scripts/init-profile-db.sh
+          env:
+            - name: PROFILE_DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: snooker-config
+                  key: PROFILE_DB_HOST
+            - name: PROFILE_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: snooker-config
+                  key: PROFILE_DB_NAME
+            - name: PROFILE_LEGACY_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: snooker-config
+                  key: PROFILE_LEGACY_DB_NAME
+            - name: PROFILE_DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: snooker-config
+                  key: PROFILE_DB_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: snooker-secrets
+                  key: PROFILE_DB_PASSWORD
+            - name: STORAGE_PUBLIC_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: snooker-config
+                  key: STORAGE_PUBLIC_BASE_URL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: profile-db-init-script

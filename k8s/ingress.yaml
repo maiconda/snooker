@@ -1,0 +1,60 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: snooker
+  namespace: snooker
+  labels:
+    app.kubernetes.io/name: snooker
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: snooker
+  annotations:
+    snooker.maiconda.com/extra-points: "4.3 Ingress Controller HTTP routing."
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: snooker.local
+      http:
+        paths:
+          - path: /api/v1/rooms
+            pathType: Prefix
+            backend:
+              service:
+                name: game
+                port:
+                  number: 8080
+          - path: /api/v1/notifications
+            pathType: Prefix
+            backend:
+              service:
+                name: game
+                port:
+                  number: 8080
+          - path: /api/v1/profiles
+            pathType: Prefix
+            backend:
+              service:
+                name: profile
+                port:
+                  number: 8080
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: auth
+                port:
+                  number: 8080
+          - path: /snooker-profiles
+            pathType: Prefix
+            backend:
+              service:
+                name: minio
+                port:
+                  number: 9000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80

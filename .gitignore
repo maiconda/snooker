@@ -1,6 +1,7 @@
 # Variáveis de Ambiente e Segredos
 .env
 .env.server
+k8s/secret.yaml
 
 # Binários e Executáveis do Go
 /bin/

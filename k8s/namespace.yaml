@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: snooker
+  labels:
+    name: snooker
+    app.kubernetes.io/name: snooker
+    app.kubernetes.io/part-of: snooker
+  annotations:
+    snooker.maiconda.com/description: "Snooker Multiplayer homelab namespace."
