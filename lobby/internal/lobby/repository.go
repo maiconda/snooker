@@ -152,17 +152,14 @@ func (r *postgresRepository) CreateRoom(ctx context.Context, creatorID string, i
 		return nil, fmt.Errorf("falha ao gerar codigo unico: %w", err)
 	}
 
-	now := time.Now()
-	expiresAt := now.Add(5 * time.Minute)
-
 	query := `
 		INSERT INTO rooms (code, creator_id, opponent_id, status, is_private, created_at, expires_at)
-		VALUES ($1, $2, NULL, 'waiting', $3, $4, $5)
+		VALUES ($1, $2, NULL, 'waiting', $3, NOW(), NOW() + INTERVAL '5 minutes')
 		RETURNING id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
 	`
 
 	var room Room
-	err = tx.QueryRow(ctx, query, code, creatorID, isPrivate, now, expiresAt).Scan(
+	err = tx.QueryRow(ctx, query, code, creatorID, isPrivate).Scan(
 		&room.ID,
 		&room.Code,
 		&room.CreatorID,
@@ -189,12 +186,13 @@ func (r *postgresRepository) CreateRoom(ctx context.Context, creatorID string, i
 
 func (r *postgresRepository) GetRoomByID(ctx context.Context, id string) (*Room, error) {
 	query := `
-		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id, NOW()
 		FROM rooms
 		WHERE id = $1
 	`
 
 	var room Room
+	var dbNow time.Time
 	err := r.pool.QueryRow(ctx, query, id).Scan(
 		&room.ID,
 		&room.Code,
@@ -208,6 +206,7 @@ func (r *postgresRepository) GetRoomByID(ctx context.Context, id string) (*Room,
 		&room.OpponentDisconnectedAt,
 		&room.CreatorConnectionID,
 		&room.OpponentConnectionID,
+		&dbNow,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -217,7 +216,7 @@ func (r *postgresRepository) GetRoomByID(ctx context.Context, id string) (*Room,
 	}
 
 	// Se estiver expirada no tempo mas ainda nao marcada no banco, marcar como expirada
-	if room.Status == StatusWaiting && room.OpponentID == nil && time.Now().After(room.ExpiresAt) {
+	if room.Status == StatusWaiting && room.OpponentID == nil && dbNow.After(room.ExpiresAt) {
 		_ = r.updateStatus(ctx, room.ID, StatusExpired)
 		room.Status = StatusExpired
 	}
@@ -227,12 +226,13 @@ func (r *postgresRepository) GetRoomByID(ctx context.Context, id string) (*Room,
 
 func (r *postgresRepository) GetRoomByCode(ctx context.Context, code string) (*Room, error) {
 	query := `
-		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id, NOW()
 		FROM rooms
 		WHERE code = $1
 	`
 
 	var room Room
+	var dbNow time.Time
 	err := r.pool.QueryRow(ctx, query, code).Scan(
 		&room.ID,
 		&room.Code,
@@ -246,6 +246,7 @@ func (r *postgresRepository) GetRoomByCode(ctx context.Context, code string) (*R
 		&room.OpponentDisconnectedAt,
 		&room.CreatorConnectionID,
 		&room.OpponentConnectionID,
+		&dbNow,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -255,7 +256,7 @@ func (r *postgresRepository) GetRoomByCode(ctx context.Context, code string) (*R
 	}
 
 	// Verificar expiracao
-	if room.Status == StatusWaiting && room.OpponentID == nil && time.Now().After(room.ExpiresAt) {
+	if room.Status == StatusWaiting && room.OpponentID == nil && dbNow.After(room.ExpiresAt) {
 		_ = r.updateStatus(ctx, room.ID, StatusExpired)
 		room.Status = StatusExpired
 	}
@@ -312,13 +313,14 @@ func (r *postgresRepository) JoinRoom(ctx context.Context, roomID string, oppone
 	defer tx.Rollback(ctx)
 
 	querySelect := `
-		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id
+		SELECT id, code, creator_id, opponent_id, status, is_private, created_at, expires_at, creator_disconnected_at, opponent_disconnected_at, creator_connection_id, opponent_connection_id, NOW()
 		FROM rooms
 		WHERE id = $1
 		FOR UPDATE
 	`
 
 	var room Room
+	var dbNow time.Time
 	err = tx.QueryRow(ctx, querySelect, roomID).Scan(
 		&room.ID,
 		&room.Code,
@@ -332,6 +334,7 @@ func (r *postgresRepository) JoinRoom(ctx context.Context, roomID string, oppone
 		&room.OpponentDisconnectedAt,
 		&room.CreatorConnectionID,
 		&room.OpponentConnectionID,
+		&dbNow,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -341,7 +344,7 @@ func (r *postgresRepository) JoinRoom(ctx context.Context, roomID string, oppone
 	}
 
 	// Validacoes
-	if room.Status == StatusExpired || (room.OpponentID == nil && time.Now().After(room.ExpiresAt)) {
+	if room.Status == StatusExpired || (room.OpponentID == nil && dbNow.After(room.ExpiresAt)) {
 		_, _ = tx.Exec(ctx, "UPDATE rooms SET status = 'expired' WHERE id = $1", roomID)
 		return nil, ErrRoomExpired
 	}
@@ -609,10 +612,10 @@ func (r *postgresRepository) ExpireRooms(ctx context.Context) ([]string, error) 
 	query := `
 		UPDATE rooms
 		SET status = 'expired'
-		WHERE status = 'waiting' AND opponent_id IS NULL AND expires_at < $1
+		WHERE status = 'waiting' AND opponent_id IS NULL AND expires_at < NOW()
 		RETURNING id
 	`
-	rows, err := r.pool.Query(ctx, query, time.Now())
+	rows, err := r.pool.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao expirar salas: %w", err)
 	}

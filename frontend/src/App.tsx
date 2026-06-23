@@ -8,26 +8,29 @@ import { LobbyRoomPage } from "./pages/LobbyRoomPage";
 import { usePathname, navigate } from "./lib/router";
 import { Button } from "./components/Button";
 import { LobbyNotificationsProvider } from "./lobby/LobbyNotificationsProvider";
+import { ThemeProvider } from "./components/ThemeContext";
 
 const GamePage = lazy(() => import("./pages/GamePage").then((module) => ({ default: module.GamePage })));
 
 export function App() {
   return (
-    <AuthProvider>
-      <LobbyNotificationsProvider>
-        <Routes />
-      </LobbyNotificationsProvider>
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <LobbyNotificationsProvider>
+          <Routes />
+        </LobbyNotificationsProvider>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
 
 function BlockedPage() {
   const auth = useAuth();
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-white px-6 text-black">
+    <main className="flex min-h-screen flex-col items-center justify-center bg-white dark:bg-zinc-950 px-6 text-neutral-900 dark:text-white transition-colors duration-300">
       <section className="w-full max-w-[360px] text-center">
         <h1 className="mb-4 text-xl font-medium tracking-normal text-red-600">Acesso Bloqueado</h1>
-        <p className="mb-8 text-sm text-neutral-600">
+        <p className="mb-8 text-sm text-neutral-600 dark:text-neutral-400">
           Sua conta foi bloqueada. Por favor, entre em contato com o suporte para obter mais informações.
         </p>
         <Button onClick={() => auth.logout()}>Sair da conta</Button>
@@ -59,7 +62,7 @@ function Routes() {
   }, [auth.phase, path]);
 
   if (auth.phase === "checking") {
-    return <main className="min-h-screen bg-white" />;
+    return <main className="min-h-screen bg-white dark:bg-zinc-950 transition-colors duration-300" />;
   }
 
   if (auth.phase === "authenticated") {
@@ -87,7 +90,7 @@ function Routes() {
         </Suspense>
       );
     }
-    return <main className="min-h-screen bg-white" />;
+    return <main className="min-h-screen bg-white dark:bg-zinc-950 transition-colors duration-300" />;
   }
 
   if (path === "/login") {

@@ -46,11 +46,11 @@ func TestPresenceTrackerRoomSpectatorsAreUnique(t *testing.T) {
 func TestPresenceTrackerAllowsOneRoomConnectionPerUser(t *testing.T) {
 	tracker := newPresenceTracker()
 
-	roomID, ok := tracker.RegisterRoomConnectionIfFree("room-1", "user-1", "conn-1")
+	roomID, ok := tracker.RegisterRoomConnectionIfFree("room-1", "user-1", "conn-1", "client-1")
 	assert.True(t, ok)
 	assert.Empty(t, roomID)
 
-	roomID, ok = tracker.RegisterRoomConnectionIfFree("room-1", "user-1", "conn-2")
+	roomID, ok = tracker.RegisterRoomConnectionIfFree("room-1", "user-1", "conn-2", "client-2")
 	assert.False(t, ok)
 	assert.Equal(t, "room-1", roomID)
 
@@ -65,9 +65,29 @@ func TestPresenceTrackerAllowsOneRoomConnectionPerUser(t *testing.T) {
 	assert.False(t, tracker.UnregisterRoomConnection("room-1", "user-1", "conn-2"))
 	assert.True(t, tracker.UnregisterRoomConnection("room-1", "user-1", "conn-1"))
 
-	roomID, ok = tracker.RegisterRoomConnectionIfFree("room-2", "user-1", "conn-3")
+	roomID, ok = tracker.RegisterRoomConnectionIfFree("room-2", "user-1", "conn-3", "client-1")
 	assert.True(t, ok)
 	assert.Empty(t, roomID)
+}
+
+func TestPresenceTrackerAllowsSameClientHandoffInSameRoom(t *testing.T) {
+	tracker := newPresenceTracker()
+
+	roomID, ok := tracker.RegisterRoomConnectionIfFree("room-1", "user-1", "conn-1", "client-1")
+	assert.True(t, ok)
+	assert.Empty(t, roomID)
+
+	roomID, ok = tracker.RegisterRoomConnectionIfFree("room-1", "user-1", "conn-2", "client-1")
+	assert.True(t, ok)
+	assert.Empty(t, roomID)
+
+	assert.False(t, tracker.UnregisterRoomConnection("room-1", "user-1", "conn-1"))
+
+	roomID, busy := tracker.UserInRoomConnection("user-1", "")
+	assert.True(t, busy)
+	assert.Equal(t, "room-1", roomID)
+
+	assert.True(t, tracker.UnregisterRoomConnection("room-1", "user-1", "conn-2"))
 }
 
 func TestPresenceTrackerCanRemoveSpectatorUserFromRoom(t *testing.T) {

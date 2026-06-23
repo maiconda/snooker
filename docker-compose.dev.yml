@@ -1,25 +1,29 @@
 # ==============================================================================
-# Docker Compose de PRODUÇÃO (Padrão)
+# Docker Compose para Ambiente de DESENVOLVIMENTO (Dev)
 # ==============================================================================
-# Para rodar em desenvolvimento local com live reload (HMR) e portas de banco
-# de dados expostas, utilize o arquivo dev:
-#   docker compose -f docker-compose.dev.yml up --build
+# Este arquivo é otimizado para o fluxo de desenvolvimento local:
+# - Montagem de volumes locais para Hot Module Replacement (HMR) no frontend/game-core.
+# - Exposição de todas as portas dos serviços e bancos de dados para acesso externo
+#   (permitindo conexões via DBeaver, NATS clients, postman, etc.).
+# - Inicialização dinâmica com comandos de desenvolvimento (npm run dev).
 # ==============================================================================
 
 services:
   # ----------------------------------------------------------------------------
-  # Servidores de Banco de Dados (PostgreSQL) - Sem portas expostas ao host
+  # Servidores de Banco de Dados (PostgreSQL) expostos para o host
   # ----------------------------------------------------------------------------
   auth-postgres:
     image: postgres:15-alpine
-    container_name: snooker-auth-postgres-prod
+    container_name: snooker-auth-postgres-dev
     restart: always
     environment:
       POSTGRES_DB: ${AUTH_DB_NAME:-snooker_auth}
       POSTGRES_USER: ${AUTH_DB_USER:-postgres}
       POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:-postgres}
+    ports:
+      - "${AUTH_DB_PORT:-5432}:5432"
     volumes:
-      - auth_postgres_prod_data:/var/lib/postgresql/data
+      - auth_postgres_dev_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${AUTH_DB_USER:-postgres} -d ${AUTH_DB_NAME:-snooker_auth}"]
       interval: 5s
@@ -28,14 +32,16 @@ services:
 
   profile-postgres:
     image: postgres:15-alpine
-    container_name: snooker-profile-postgres-prod
+    container_name: snooker-profile-postgres-dev
     restart: always
     environment:
       POSTGRES_DB: ${PROFILE_DB_NAME:-snooker_game}
       POSTGRES_USER: ${PROFILE_DB_USER:-postgres}
       POSTGRES_PASSWORD: ${PROFILE_DB_PASSWORD:-postgres}
+    ports:
+      - "${PROFILE_DB_PORT:-5433}:5432"
     volumes:
-      - profile_postgres_prod_data:/var/lib/postgresql/data
+      - profile_postgres_dev_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${PROFILE_DB_USER:-postgres} -d ${PROFILE_DB_NAME:-snooker_game}"]
       interval: 5s
@@ -44,14 +50,16 @@ services:
 
   game-postgres:
     image: postgres:15-alpine
-    container_name: snooker-game-postgres-prod
+    container_name: snooker-game-postgres-dev
     restart: always
     environment:
       POSTGRES_DB: ${GAME_DB_NAME:-snooker_game}
       POSTGRES_USER: ${GAME_DB_USER:-postgres}
       POSTGRES_PASSWORD: ${GAME_DB_PASSWORD:-postgres}
+    ports:
+      - "${GAME_DB_PORT:-5434}:5432"
     volumes:
-      - game_postgres_prod_data:/var/lib/postgresql/data
+      - game_postgres_dev_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${GAME_DB_USER:-postgres} -d ${GAME_DB_NAME:-snooker_game}"]
       interval: 5s
@@ -63,7 +71,7 @@ services:
   # ----------------------------------------------------------------------------
   profile-db-init:
     image: postgres:15-alpine
-    container_name: snooker-profile-db-init-prod
+    container_name: snooker-profile-db-init-dev
     depends_on:
       profile-postgres:
         condition: service_healthy
@@ -72,25 +80,28 @@ services:
       PROFILE_DB_NAME: ${PROFILE_DB_NAME:-snooker_game}
       PROFILE_LEGACY_DB_NAME: ${PROFILE_LEGACY_DB_NAME:-snooker_profile}
       PROFILE_DB_USER: ${PROFILE_DB_USER:-postgres}
-      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-http://localhost:3000/snooker-profiles}
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-http://localhost:9005/snooker-profiles}
     volumes:
       - ./profile/scripts:/scripts:ro
     entrypoint: ["/bin/sh", "/scripts/init-profile-db.sh"]
 
   # ----------------------------------------------------------------------------
-  # Object Storage (MinIO) & Inicializador de Buckets (Acesso via Nginx Proxy)
+  # Object Storage (MinIO) & Inicializador de Buckets
   # ----------------------------------------------------------------------------
   minio:
     image: minio/minio:latest
-    container_name: snooker-minio-prod
+    container_name: snooker-minio-dev
     restart: always
-    command: server /data
+    command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-http://localhost:3000}
+    ports:
+      - "${MINIO_API_PORT:-9005}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
-      - minio_prod_data:/data
+      - minio_dev_data:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
@@ -99,7 +110,7 @@ services:
 
   minio-init:
     image: minio/mc:latest
-    container_name: snooker-minio-init-prod
+    container_name: snooker-minio-init-dev
     depends_on:
       minio:
         condition: service_healthy
@@ -114,9 +125,11 @@ services:
   # ----------------------------------------------------------------------------
   nats:
     image: nats:alpine
-    container_name: snooker-nats-prod
+    container_name: snooker-nats-dev
     restart: always
     command: ["-js"]
+    ports:
+      - "${NATS_PORT:-4222}:4222"
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 4222 || exit 1"]
       interval: 5s
@@ -124,18 +137,20 @@ services:
       retries: 5
 
   # ----------------------------------------------------------------------------
-  # Microsserviços de Backend (Go) - Isolados na rede interna
+  # Microsserviços de Backend (Go) - Portas expostas para depuração no host
   # ----------------------------------------------------------------------------
   auth:
     build:
       context: .
       dockerfile: auth/Dockerfile
-    container_name: snooker-auth-prod
+    container_name: snooker-auth-dev
     restart: always
+    ports:
+      - "${AUTH_PORT:-8081}:8080"
     environment:
       - PORT=8080
       - ALLOWED_ORIGINS=${AUTH_ALLOWED_ORIGINS:-http://localhost:3000}
-      - COOKIE_SECURE=${AUTH_COOKIE_SECURE:-true}
+      - COOKIE_SECURE=${AUTH_COOKIE_SECURE:-false}
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID is required}
       - INTERNAL_API_KEY=${INTERNAL_API_KEY:-dev_internal_key_change_me}
@@ -159,8 +174,10 @@ services:
     build:
       context: .
       dockerfile: profile/Dockerfile
-    container_name: snooker-profile-prod
+    container_name: snooker-profile-dev
     restart: always
+    ports:
+      - "${PROFILE_PORT:-8082}:8080"
     environment:
       - PORT=8080
       - ALLOWED_ORIGINS=${PROFILE_ALLOWED_ORIGINS:-http://localhost:3000}
@@ -174,7 +191,7 @@ services:
       - DB_NAME=${PROFILE_DB_NAME:-snooker_game}
       - DB_SSLMODE=disable
       - STORAGE_ENDPOINT=minio:9000
-      - STORAGE_PUBLIC_BASE_URL=${STORAGE_PUBLIC_BASE_URL:-http://localhost:3000/snooker-profiles}
+      - STORAGE_PUBLIC_BASE_URL=${STORAGE_PUBLIC_BASE_URL:-http://localhost:9005/snooker-profiles}
       - STORAGE_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - STORAGE_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
       - STORAGE_BUCKET_NAME=${STORAGE_BUCKET_NAME:-snooker-profiles}
@@ -201,8 +218,10 @@ services:
     build:
       context: .
       dockerfile: lobby/Dockerfile
-    container_name: snooker-game-prod
+    container_name: snooker-game-dev
     restart: always
+    ports:
+      - "${GAME_PORT:-8083}:8080"
     environment:
       - PORT=8080
       - ALLOWED_ORIGINS=${GAME_ALLOWED_ORIGINS:-http://localhost:3000}
@@ -232,18 +251,28 @@ services:
       start_period: 60s
 
   # ----------------------------------------------------------------------------
-  # Frontend de Produção (Compilado e servido via Nginx na porta externa 3000)
+  # Frontend principal com montagem de volume (Vite HMR ativo)
   # ----------------------------------------------------------------------------
   frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-      args:
-        - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-    container_name: snooker-frontend-prod
+    image: node:24-alpine
+    container_name: snooker-frontend-dev
     restart: always
     ports:
-      - "${FRONTEND_PORT:-3000}:80"
+      - "${FRONTEND_PORT:-3000}:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    working_dir: /app
+    environment:
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID is required}
+      - VITE_AUTH_API_ORIGIN=/api
+      - VITE_AUTH_PROXY_TARGET=http://auth:8080
+      - VITE_PROFILE_API_ORIGIN=/api
+      - VITE_PROFILE_PROXY_TARGET=http://profile:8080
+      - VITE_GAME_API_ORIGIN=/api
+      - VITE_GAME_PROXY_TARGET=http://game:8080
+      - VITE_STORAGE_PROXY_TARGET=http://minio:9000
+    command: sh -c "npm ci && npm run dev"
     depends_on:
       auth:
         condition: service_healthy
@@ -252,11 +281,26 @@ services:
       game:
         condition: service_healthy
 
+  # ----------------------------------------------------------------------------
+  # Game Core (Motor de física / protótipo client-side em desenvolvimento)
+  # ----------------------------------------------------------------------------
+  game-core:
+    image: node:24-alpine
+    container_name: snooker-game-core-dev
+    restart: always
+    ports:
+      - "${GAME_CORE_PORT:-3001}:3001"
+    volumes:
+      - ./game-core:/app
+      - /app/node_modules
+    working_dir: /app
+    command: sh -c "npm ci && npx vite --host 0.0.0.0 --port 3001"
+
 # ----------------------------------------------------------------------------
-# Definição de volumes persistentes de produção
+# Definição de volumes persistentes locais
 # ----------------------------------------------------------------------------
 volumes:
-  auth_postgres_prod_data:
-  profile_postgres_prod_data:
-  game_postgres_prod_data:
-  minio_prod_data:
+  auth_postgres_dev_data:
+  profile_postgres_dev_data:
+  game_postgres_dev_data:
+  minio_dev_data:

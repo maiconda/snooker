@@ -144,9 +144,9 @@ export function LobbyNotificationsProvider({ children }: { children: ReactNode }
       {isAuthenticated && invites.length > 0 && (
         <div className="fixed right-4 top-4 z-50 w-[min(360px,calc(100vw-2rem))] space-y-3">
           {invites.map((invite) => (
-            <div key={invite.invitation_id} className="rounded-lg border border-emerald-500/30 bg-neutral-950 p-4 text-white shadow-2xl shadow-black/30">
-              <p className="text-xs uppercase tracking-[0.16em] text-emerald-400">Convite recebido</p>
-              <p className="mt-2 text-sm text-neutral-200">
+            <div key={invite.invitation_id} className="rounded-lg border border-neutral-200 dark:border-red-500/30 bg-white/95 dark:bg-neutral-950 p-4 text-neutral-900 dark:text-white shadow-2xl shadow-neutral-200/40 dark:shadow-black/30">
+              <p className="text-xs uppercase tracking-[0.16em] text-red-600 dark:text-red-400 font-bold">Convite recebido</p>
+              <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-200">
                 {profilesById[invite.from_user_id]?.nickname ?? "Um jogador"} te convidou para uma mesa.
               </p>
               <div className="mt-3 flex gap-2">

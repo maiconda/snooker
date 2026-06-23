@@ -28,12 +28,26 @@ type Handler struct {
 	snapshots              map[string]json.RawMessage
 	turnTimersMu           sync.Mutex
 	turnTimers             map[string]*scheduledTurnTimer
+	prepareTimersMu        sync.Mutex
+	prepareTimers          map[string]*scheduledPrepareTimer
+	shotTimersMu           sync.Mutex
+	shotTimers             map[string]*scheduledShotTimer
 }
 
 type scheduledTurnTimer struct {
 	turnSeq    int
 	deadlineMS int64
 	timer      *time.Timer
+}
+
+type scheduledPrepareTimer struct {
+	turnSeq int
+	timer   *time.Timer
+}
+
+type scheduledShotTimer struct {
+	shotSeq int
+	timer   *time.Timer
 }
 
 type HandlerOption func(*Handler)
@@ -64,6 +78,8 @@ func NewHandler(repo Repository, opts ...HandlerOption) *Handler {
 		xpAwarder:              noopMatchXPAwarder{},
 		snapshots:              make(map[string]json.RawMessage),
 		turnTimers:             make(map[string]*scheduledTurnTimer),
+		prepareTimers:          make(map[string]*scheduledPrepareTimer),
+		shotTimers:             make(map[string]*scheduledShotTimer),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -169,6 +185,29 @@ func (h *Handler) GetRoom(c *gin.Context) {
 			Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "A sala nao esta mais ativa"},
 		})
 		return
+	}
+
+	if userID, exists := c.Get(httpx.ContextKeyUserID); exists {
+		userIDStr := userID.(string)
+		if _, busy := h.presence.UserInRoomConnection(userIDStr, room.ID); busy {
+			c.JSON(http.StatusConflict, httpx.ErrorResponse{
+				Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "Voce ja esta em uma sala ativa"},
+			})
+			return
+		}
+		activeInOtherRoom, err := h.repo.UserHasActiveRoom(c.Request.Context(), userIDStr, room.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, httpx.ErrorResponse{
+				Error: httpx.ErrorDetail{Code: httpx.ErrCodeInternal, Message: err.Error()},
+			})
+			return
+		}
+		if activeInOtherRoom {
+			c.JSON(http.StatusConflict, httpx.ErrorResponse{
+				Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "Voce ja esta em uma sala ativa"},
+			})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, toRoomResponse(room))
@@ -661,6 +700,5 @@ func roomAcceptsInvite(room *Room) bool {
 	return room.Status == StatusWaiting &&
 		room.OpponentID == nil &&
 		room.CreatorDisconnectedAt == nil &&
-		room.OpponentDisconnectedAt == nil &&
-		time.Now().Before(room.ExpiresAt)
+		room.OpponentDisconnectedAt == nil
 }

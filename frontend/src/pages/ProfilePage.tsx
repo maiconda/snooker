@@ -159,23 +159,23 @@ export function ProfilePage() {
   const levelProgress = totalXP % 100;
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-white">
-      <section className="mx-auto flex min-h-screen w-full max-w-5xl flex-col px-5 py-6">
-        <header className="mb-6 flex items-center justify-between border-b border-white/10 pb-4">
+    <main className="relative min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-red-100/30 via-zinc-50 to-zinc-50 dark:from-red-950/20 dark:via-neutral-950 dark:to-neutral-950 p-6 text-neutral-900 dark:text-white transition-colors duration-300 animate-fade-in">
+      <div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.015)_1px,transparent_1px)] dark:bg-[linear-gradient(to_bottom,rgba(255,255,255,0.005)_1px,transparent_1px)] bg-[size:100%_40px] pointer-events-none" />
+      <section className="relative mx-auto flex min-h-[calc(100vh-3rem)] w-full max-w-5xl flex-col justify-center px-5">
+        <header className="mb-6 flex items-center justify-between border-b border-neutral-200 dark:border-white/10 pb-4">
           <div>
-            <p className="text-xs uppercase tracking-[0.18em] text-neutral-500">Snooker</p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-normal">{isOnboarding ? "Criar perfil" : "Editar perfil"}</h1>
+            <h1 className="mt-1 text-2xl font-bold tracking-tight text-neutral-900 dark:text-white">{isOnboarding ? "Criar perfil" : "Editar perfil"}</h1>
           </div>
           {!isOnboarding ? (
-            <button className="border border-white/15 px-3 py-2 text-sm text-neutral-200 transition hover:border-white/40" onClick={() => navigate("/")}>
+            <Button onClick={() => navigate("/")} variant="outline" className="!w-auto px-4 h-9">
               Voltar
-            </button>
+            </Button>
           ) : null}
         </header>
 
         <div className="grid flex-1 gap-6 md:grid-cols-[320px_1fr]">
-          <aside className="border border-white/10 bg-neutral-900 p-4">
-            <div className="aspect-square w-full overflow-hidden border border-white/10 bg-neutral-800">
+          <aside className="border border-neutral-200 dark:border-white/10 bg-white/40 dark:bg-zinc-900/30 p-4 rounded-xl shadow-xl shadow-neutral-200/10 dark:shadow-none">
+            <div className="aspect-square w-full overflow-hidden border border-neutral-200 dark:border-white/10 bg-neutral-100 dark:bg-neutral-800 rounded-lg">
               {previewImage ? (
                 imageUrl ? (
                   <img
@@ -191,31 +191,35 @@ export function ProfilePage() {
                   <img alt="" className="h-full w-full object-cover" src={previewImage} />
                 )
               ) : (
-                <div className="flex h-full items-center justify-center text-sm text-neutral-500">1:1</div>
+                <div className="flex h-full w-full items-center justify-center bg-neutral-100 dark:bg-neutral-800/40 text-neutral-400 dark:text-neutral-500">
+                  <svg className="h-16 w-16 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
+                  </svg>
+                </div>
               )}
             </div>
 
-            <div className="mt-4 border-t border-white/10 pt-4">
-              <p className="text-sm font-medium text-white">{nickname || "nickname"}</p>
-              <p className="mt-1 min-h-10 text-sm text-neutral-400">{bio || "bio"}</p>
-              <div className="mt-4 border border-white/10 bg-white/5 p-3">
+            <div className="mt-4 border-t border-neutral-200 dark:border-white/10 pt-4">
+              <p className="text-sm font-bold text-neutral-800 dark:text-white break-words">{nickname || "nickname"}</p>
+              <p className="mt-1 min-h-10 text-sm text-neutral-500 dark:text-neutral-400 break-words line-clamp-3">{bio || "bio"}</p>
+              <div className="mt-4 border border-neutral-200 dark:border-white/10 bg-white/80 dark:bg-white/5 p-3 rounded-lg shadow-sm">
                 <div className="flex items-center justify-between text-sm">
-                  <span className="font-semibold text-white">Nivel {level}</span>
-                  <span className="text-neutral-400">{totalXP} XP</span>
+                  <span className="font-semibold text-neutral-800 dark:text-white">Nível {level}</span>
+                  <span className="text-neutral-500 dark:text-neutral-400">{totalXP} XP</span>
                 </div>
-                <div className="mt-3 h-2 bg-neutral-800">
-                  <div className="h-full bg-emerald-400" style={{ width: `${levelProgress}%` }} />
+                <div className="mt-3 h-2 bg-neutral-200 dark:bg-neutral-800 rounded-full overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-red-600 to-rose-500 rounded-full shadow-[0_0_8px_rgba(239,68,68,0.5)]" style={{ width: `${levelProgress}%` }} />
                 </div>
-                <p className="mt-2 text-xs text-neutral-500">{nextLevelXP - totalXP} XP para o proximo nivel</p>
+                <p className="mt-2 text-sm text-neutral-500 dark:text-neutral-400 font-semibold">{nextLevelXP - totalXP} XP para o próximo nível</p>
               </div>
             </div>
           </aside>
 
-          <form className="border border-white/10 bg-white p-5 text-black" onSubmit={handleSubmit}>
+          <form className="border border-neutral-200 dark:border-white/10 bg-white/80 dark:bg-zinc-900/30 p-6 rounded-xl text-neutral-900 dark:text-white shadow-xl shadow-neutral-200/10 dark:shadow-none" onSubmit={handleSubmit}>
             {loading ? (
               <div className="h-80 animate-pulse bg-neutral-100" />
             ) : (
-              <div className="space-y-5">
+              <div className="space-y-4">
                 <TextField
                   label="Nickname"
                   name="nickname"
@@ -227,37 +231,37 @@ export function ProfilePage() {
                 />
                 {nicknameIssue ? <p className="-mt-3 text-sm text-red-600">{nicknameIssue}</p> : null}
 
-                <label className="block text-sm text-neutral-800" htmlFor="bio">
-                  <span className="mb-2 block">Bio</span>
+                <label className="block text-sm text-neutral-700 dark:text-neutral-300" htmlFor="bio">
+                  <span className="mb-2 block font-medium text-neutral-600 dark:text-neutral-400">Bio</span>
                   <textarea
                     id="bio"
                     name="bio"
-                    className="min-h-28 w-full resize-none border border-neutral-300 bg-white px-3 py-2 text-sm text-black outline-none transition placeholder:text-neutral-400 focus:border-black"
+                    className="min-h-20 w-full resize-none rounded-lg border border-neutral-300 dark:border-white/10 bg-white dark:bg-zinc-900/50 px-3 py-2 text-sm text-neutral-900 dark:text-white placeholder-neutral-400 dark:placeholder-neutral-600 outline-none transition focus:border-red-500/60 focus:ring-2 focus:ring-red-500/20"
                     maxLength={200}
                     value={bio}
                     onChange={(event) => setBio(event.target.value)}
                   />
                 </label>
-                <div className="-mt-4 flex justify-between text-xs text-neutral-500">
+                <div className="-mt-3 flex justify-between text-sm font-semibold text-neutral-500 dark:text-neutral-400">
                   <span>{bioIssue ?? ""}</span>
                   <span>{bio.length}/200</span>
                 </div>
 
-                <label className="block text-sm text-neutral-800" htmlFor="photo">
-                  <span className="mb-2 block">Foto</span>
+                <label className="block text-sm text-neutral-700 dark:text-neutral-300" htmlFor="photo">
+                  <span className="mb-2 block font-medium text-neutral-600 dark:text-neutral-400">Foto</span>
                   <input
                     id="photo"
                     name="photo"
                     type="file"
                     accept="image/jpeg,image/png,image/webp"
-                    className="block w-full border border-neutral-300 bg-white text-sm text-neutral-700 file:mr-4 file:h-10 file:border-0 file:bg-black file:px-4 file:text-sm file:font-medium file:text-white"
+                    className="block w-full border border-neutral-300 dark:border-white/10 rounded-lg bg-white dark:bg-zinc-900/50 text-sm text-neutral-700 dark:text-neutral-300 file:mr-4 file:h-10 file:border-0 file:bg-red-600 file:px-4 file:text-sm file:font-medium file:text-white file:cursor-pointer hover:file:bg-red-500 file:transition"
                     onChange={handleFile}
                   />
                 </label>
-                {imageName ? <p className="-mt-3 text-xs text-neutral-500">{imageName}</p> : null}
+                {imageName ? <p className="-mt-3 text-sm text-neutral-500 font-medium">{imageName}</p> : null}
 
                 {imageUrl ? (
-                  <div className="grid gap-4 border border-neutral-200 bg-neutral-50 p-4 md:grid-cols-3">
+                  <div className="grid gap-4 border border-neutral-200 dark:border-white/5 bg-neutral-50 dark:bg-neutral-950/40 p-4 rounded-lg md:grid-cols-3">
                     <RangeField label="Zoom" min={1} max={2.5} step={0.05} value={zoom} onChange={setZoom} />
                     <RangeField label="Horizontal" min={-40} max={40} step={1} value={offsetX} onChange={setOffsetX} />
                     <RangeField label="Vertical" min={-40} max={40} step={1} value={offsetY} onChange={setOffsetY} />
@@ -302,10 +306,10 @@ function RangeField({
   onChange: (value: number) => void;
 }) {
   return (
-    <label className="block text-xs font-medium uppercase tracking-[0.14em] text-neutral-500">
+    <label className="block text-sm font-bold uppercase tracking-[0.14em] text-neutral-500 dark:text-neutral-400">
       <span className="mb-2 block">{label}</span>
       <input
-        className="w-full accent-black"
+        className="w-full accent-red-600 dark:accent-red-500 cursor-pointer"
         max={max}
         min={min}
         step={step}

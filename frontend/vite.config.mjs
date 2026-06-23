@@ -31,6 +31,9 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 3000,
       allowedHosts: true,
+      watch: {
+        usePolling: true
+      },
       proxy: {
         "/api/v1/rooms": {
           target: lobbyProxyTarget,

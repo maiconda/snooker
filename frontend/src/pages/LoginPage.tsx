@@ -62,8 +62,8 @@ export function LoginPage() {
       title="Entrar"
       footer={
         <span>
-          Ainda nao tem conta?{" "}
-          <Link className="text-black underline decoration-neutral-400 underline-offset-4 hover:decoration-black" to="/cadastro">
+          Ainda não tem conta?{" "}
+          <Link className="text-red-600 dark:text-red-400 font-semibold hover:text-red-500 dark:hover:text-red-300 transition-colors hover:underline underline-offset-4" to="/cadastro">
             Criar conta
           </Link>
         </span>

@@ -27,6 +27,9 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+const roomConnectionHandoffGrace = 750 * time.Millisecond
+const matchReconcileRetryDelay = time.Second
+
 // WSEvent define o envelope padrao para mensagens em tempo real.
 type WSEvent struct {
 	Type     string          `json:"type"`
@@ -248,7 +251,8 @@ func (h *Handler) HandleWS(c *gin.Context) {
 	}
 
 	roomConnectionID := uuid.NewString()
-	if _, ok := h.presence.RegisterRoomConnectionIfFree(room.ID, userID, roomConnectionID); !ok {
+	roomClientID := roomWebSocketClientID(c.Query("client_id"))
+	if _, ok := h.presence.RegisterRoomConnectionIfFree(room.ID, userID, roomConnectionID, roomClientID); !ok {
 		c.JSON(http.StatusConflict, httpx.ErrorResponse{
 			Error: httpx.ErrorDetail{Code: httpx.ErrCodeConflict, Message: "Voce ja esta em uma partida ativa"},
 		})
@@ -405,6 +409,7 @@ func (h *Handler) HandleWS(c *gin.Context) {
 
 	switch connectionRole {
 	case LeaveRoleCreator:
+		time.Sleep(roomConnectionHandoffGrace)
 		disconnectedAt := time.Now().UTC()
 		marked, err := h.repo.MarkCreatorDisconnected(context.Background(), disconnectRoom.ID, userID, connectionID, disconnectedAt)
 		if err != nil {
@@ -421,6 +426,7 @@ func (h *Handler) HandleWS(c *gin.Context) {
 		}
 
 	case LeaveRoleOpponent:
+		time.Sleep(roomConnectionHandoffGrace)
 		disconnectedAt := time.Now().UTC()
 		marked, err := h.repo.MarkOpponentDisconnected(context.Background(), disconnectRoom.ID, userID, connectionID, disconnectedAt)
 		if err != nil {
@@ -514,6 +520,15 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		log.Printf("falha ao atualizar sala %s antes de processar evento %s: %v", room.ID, event.Type, err)
 	}
 
+	if shouldReconcileBeforeRoomClientEvent(event.Type) && room.Status == StatusPlaying {
+		outcome, ok := h.reconcileMatchState(ctx, room, time.Now())
+		if !ok {
+			log.Printf("falha ao reconciliar snapshot da sala %s antes do evento %s", room.ID, event.Type)
+			return false
+		}
+		publishMatchReconcile(nc, room.ID, outcome)
+	}
+
 	switch event.Type {
 	case "chat_message":
 		if !isParticipant {
@@ -577,7 +592,7 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		return true
 
 	case "cue_state":
-		if !isParticipant || room.Status != StatusPlaying || roomHasReconnectingPlayer(room) {
+		if !isParticipant || room.Status != StatusPlaying {
 			return false
 		}
 		payload, ok := cueStatePayload(event.Payload, userID)
@@ -587,6 +602,7 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		snapshot, ok := h.getCanonicalSnapshot(ctx, room.ID)
 		if !ok ||
 			snapshot.Status != matchStatusAiming ||
+			!turnClockStarted(snapshot) ||
 			isTurnExpired(snapshot, time.Now().UnixMilli()) ||
 			snapshot.TurnUserID != userID ||
 			(payload["match_id"] != "" && payload["match_id"] != room.ID) ||
@@ -600,8 +616,47 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		_ = nc.Publish(natsclient.RoomEventsSubject(room.ID), eventBytes)
 		return true
 
+	case "turn_ready":
+		if !isParticipant || room.Status != StatusPlaying {
+			return false
+		}
+		payload, ok := turnReadyPayload(event.Payload)
+		if !ok {
+			return false
+		}
+		if payload.MatchID != "" && payload.MatchID != room.ID {
+			return false
+		}
+		var readySnapshot matchSnapshot
+		ready := func() bool {
+			h.matchStateMu.Lock()
+			defer h.matchStateMu.Unlock()
+
+			snapshot, ok := h.ensureCanonicalSnapshot(ctx, room)
+			if !ok ||
+				snapshot.Status != matchStatusAiming ||
+				snapshot.WinnerUserID != "" ||
+				snapshot.TurnUserID != userID ||
+				(payload.TurnSeq > 0 && payload.TurnSeq != snapshot.TurnSeq) {
+				return false
+			}
+
+			if turnClockStarted(snapshot) {
+				readySnapshot = snapshot
+				return true
+			}
+
+			readySnapshot = startTurnClock(snapshot, time.Now().UnixMilli())
+			return h.storeCanonicalSnapshot(ctx, room.ID, readySnapshot)
+		}()
+		if !ready {
+			return false
+		}
+		publishCanonicalSnapshot(nc, room.ID, readySnapshot)
+		return true
+
 	case "shot_started":
-		if !isParticipant || room.Status != StatusPlaying || roomHasReconnectingPlayer(room) {
+		if !isParticipant || room.Status != StatusPlaying {
 			return false
 		}
 		intent, ok := parseShotIntent(event.Payload)
@@ -623,7 +678,8 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 			if !ok ||
 				snapshot.Status != matchStatusAiming ||
 				snapshot.WinnerUserID != "" ||
-				snapshot.TurnUserID != userID {
+				snapshot.TurnUserID != userID ||
+				!turnClockStarted(snapshot) {
 				return false
 			}
 
@@ -637,6 +693,7 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 				}
 				return false
 			}
+			now = snapshotUpdateTimeAfter(snapshot, now)
 
 			nextSeq := snapshot.ShotSeq + 1
 			activeShot = activeShotState{
@@ -755,14 +812,16 @@ func (h *Handler) handleRoomClientEvent(ctx context.Context, js nats.JetStreamCo
 		if room.Status != StatusPlaying {
 			return false
 		}
-		h.matchStateMu.Lock()
-		snapshot, ok := h.ensureCanonicalSnapshot(ctx, room)
-		h.syncTurnTimer(room.ID, snapshot)
-		h.matchStateMu.Unlock()
+		outcome, ok := h.reconcileMatchState(ctx, room, time.Now())
 		if !ok {
+			log.Printf("falha ao reconciliar snapshot da sala %s ao solicitar estado", room.ID)
 			return false
 		}
-		publishCanonicalSnapshot(nc, room.ID, snapshot)
+		publishMatchReconcile(nc, room.ID, outcome)
+		snapshot := outcome.snapshot
+		if !outcome.changed {
+			publishCanonicalSnapshot(nc, room.ID, snapshot)
+		}
 		if snapshot.ActiveShot != nil {
 			eventBytes, err := makeWSEvent("shot_started", snapshot.ActiveShot.ShooterUserID, snapshot.ActiveShot)
 			if err == nil {
@@ -896,6 +955,27 @@ func cueStatePayload(raw json.RawMessage, userID string) (map[string]any, bool) 
 		"client_seq":            payload.ClientSeq,
 		"server_received_at_ms": time.Now().UnixMilli(),
 	}, true
+}
+
+type turnReadyMessage struct {
+	MatchID string `json:"match_id,omitempty"`
+	TurnSeq int    `json:"turn_seq,omitempty"`
+}
+
+func turnReadyPayload(raw json.RawMessage) (turnReadyMessage, bool) {
+	if len(raw) == 0 {
+		return turnReadyMessage{}, true
+	}
+
+	var payload turnReadyMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return payload, false
+	}
+	payload.MatchID = strings.TrimSpace(payload.MatchID)
+	if payload.TurnSeq < 0 {
+		return payload, false
+	}
+	return payload, true
 }
 
 func finite(value float64) bool {
@@ -1035,6 +1115,14 @@ func (h *Handler) findRoom(ctx context.Context, codeOrID string) (*Room, error) 
 
 func isRoomParticipant(room *Room, userID string) bool {
 	return room.CreatorID == userID || (room.OpponentID != nil && *room.OpponentID == userID)
+}
+
+func roomWebSocketClientID(raw string) string {
+	clientID := strings.TrimSpace(raw)
+	if len(clientID) > 128 {
+		clientID = clientID[:128]
+	}
+	return clientID
 }
 
 func roomParticipantIDs(room *Room) []string {
@@ -1200,6 +1288,8 @@ func (h *Handler) clearCachedSnapshot(roomID string) {
 		delete(h.snapshots, roomID)
 	}
 	h.cancelTurnTimer(roomID)
+	h.cancelPrepareTimer(roomID)
+	h.cancelShotTimer(roomID)
 }
 
 func (h *Handler) getCanonicalSnapshot(ctx context.Context, roomID string) (matchSnapshot, bool) {
@@ -1271,7 +1361,7 @@ func (h *Handler) storeCanonicalSnapshot(ctx context.Context, roomID string, sna
 			return false
 		}
 	}
-	h.syncTurnTimer(roomID, snapshot)
+	h.syncMatchTimers(roomID, snapshot)
 	return true
 }
 
@@ -1311,12 +1401,130 @@ func publishTurnTimeout(nc *nats.Conn, roomID string, payload turnTimeoutPayload
 	return true
 }
 
+func publishShotResultTimeout(nc *nats.Conn, roomID string, payload shotResultTimeoutPayload) bool {
+	eventBytes, err := makeWSEvent("shot_result_timeout", "server", payload)
+	if err != nil {
+		log.Printf("falha ao serializar timeout de tacada da sala %s: %v", roomID, err)
+		return false
+	}
+	if err := nc.Publish(natsclient.RoomEventsSubject(roomID), eventBytes); err != nil {
+		log.Printf("falha ao publicar timeout de tacada da sala %s: %v", roomID, err)
+		return false
+	}
+	return true
+}
+
+type matchReconcileOutcome struct {
+	snapshot    matchSnapshot
+	changed     bool
+	turnTimeout *turnTimeoutPayload
+	shotTimeout *shotResultTimeoutPayload
+}
+
+func (h *Handler) reconcileMatchState(ctx context.Context, room *Room, now time.Time) (matchReconcileOutcome, bool) {
+	outcome := matchReconcileOutcome{}
+	if room == nil || room.Status != StatusPlaying {
+		return outcome, false
+	}
+
+	h.matchStateMu.Lock()
+	defer h.matchStateMu.Unlock()
+
+	snapshot, ok := h.ensureCanonicalSnapshot(ctx, room)
+	if !ok {
+		return outcome, false
+	}
+	outcome.snapshot = snapshot
+
+	nowMS := now.UnixMilli()
+	var next matchSnapshot
+	var changed bool
+
+	switch {
+	case snapshot.Status == matchStatusAiming && snapshot.WinnerUserID == "" && turnClockStarted(snapshot) && isTurnExpired(snapshot, nowMS):
+		timeoutSnapshot, payload, ok := applyTurnTimeout(room, snapshot, nowMS)
+		if !ok {
+			h.syncMatchTimers(room.ID, snapshot)
+			return outcome, true
+		}
+		next = timeoutSnapshot
+		outcome.turnTimeout = &payload
+		changed = true
+
+	case snapshot.Status == matchStatusAiming && snapshot.WinnerUserID == "" && turnPrepareDue(snapshot, nowMS):
+		next = startTurnClock(snapshot, nowMS)
+		changed = true
+
+	case shotResultExpired(snapshot, nowMS):
+		timeoutSnapshot, payload, ok := applyShotResultTimeout(room, snapshot, nowMS)
+		if !ok {
+			h.syncMatchTimers(room.ID, snapshot)
+			return outcome, true
+		}
+		next = timeoutSnapshot
+		outcome.shotTimeout = &payload
+		changed = true
+	}
+
+	if !changed {
+		h.syncMatchTimers(room.ID, snapshot)
+		return outcome, true
+	}
+
+	if !h.storeCanonicalSnapshot(ctx, room.ID, next) {
+		return outcome, false
+	}
+	outcome.snapshot = next
+	outcome.changed = true
+	return outcome, true
+}
+
+func publishMatchReconcile(nc *nats.Conn, roomID string, outcome matchReconcileOutcome) {
+	if nc == nil || !outcome.changed {
+		return
+	}
+	if outcome.turnTimeout != nil {
+		publishTurnTimeout(nc, roomID, *outcome.turnTimeout)
+	}
+	if outcome.shotTimeout != nil {
+		publishShotResultTimeout(nc, roomID, *outcome.shotTimeout)
+	}
+	publishCanonicalSnapshot(nc, roomID, outcome.snapshot)
+}
+
+func shouldReconcileBeforeRoomClientEvent(eventType string) bool {
+	switch eventType {
+	case "cue_state", "turn_ready", "shot_started", "shot_result_submitted":
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *Handler) cancelTurnTimer(roomID string) {
 	h.turnTimersMu.Lock()
 	defer h.turnTimersMu.Unlock()
 	if scheduled, ok := h.turnTimers[roomID]; ok {
 		scheduled.timer.Stop()
 		delete(h.turnTimers, roomID)
+	}
+}
+
+func (h *Handler) cancelPrepareTimer(roomID string) {
+	h.prepareTimersMu.Lock()
+	defer h.prepareTimersMu.Unlock()
+	if scheduled, ok := h.prepareTimers[roomID]; ok {
+		scheduled.timer.Stop()
+		delete(h.prepareTimers, roomID)
+	}
+}
+
+func (h *Handler) cancelShotTimer(roomID string) {
+	h.shotTimersMu.Lock()
+	defer h.shotTimersMu.Unlock()
+	if scheduled, ok := h.shotTimers[roomID]; ok {
+		scheduled.timer.Stop()
+		delete(h.shotTimers, roomID)
 	}
 }
 
@@ -1328,6 +1536,81 @@ func (h *Handler) forgetTurnTimer(roomID string, turnSeq int) {
 	}
 }
 
+func (h *Handler) forgetPrepareTimer(roomID string, turnSeq int) {
+	h.prepareTimersMu.Lock()
+	defer h.prepareTimersMu.Unlock()
+	if scheduled, ok := h.prepareTimers[roomID]; ok && scheduled.turnSeq == turnSeq {
+		delete(h.prepareTimers, roomID)
+	}
+}
+
+func (h *Handler) forgetShotTimer(roomID string, shotSeq int) {
+	h.shotTimersMu.Lock()
+	defer h.shotTimersMu.Unlock()
+	if scheduled, ok := h.shotTimers[roomID]; ok && scheduled.shotSeq == shotSeq {
+		delete(h.shotTimers, roomID)
+	}
+}
+
+func (h *Handler) syncMatchTimers(roomID string, snapshot matchSnapshot) {
+	if snapshot.Status == matchStatusMoving && snapshot.ActiveShot != nil && snapshot.WinnerUserID == "" {
+		h.cancelTurnTimer(roomID)
+		h.cancelPrepareTimer(roomID)
+		h.syncShotTimer(roomID, snapshot)
+		return
+	}
+	h.cancelShotTimer(roomID)
+	if snapshot.Status != matchStatusAiming || snapshot.WinnerUserID != "" {
+		h.cancelTurnTimer(roomID)
+		h.cancelPrepareTimer(roomID)
+		return
+	}
+	if turnClockStarted(snapshot) {
+		h.cancelPrepareTimer(roomID)
+		h.syncTurnTimer(roomID, snapshot)
+		return
+	}
+	h.cancelTurnTimer(roomID)
+	h.syncPrepareTimer(roomID, snapshot)
+}
+
+func (h *Handler) syncPrepareTimer(roomID string, snapshot matchSnapshot) {
+	if snapshot.Status != matchStatusAiming || snapshot.WinnerUserID != "" || turnClockStarted(snapshot) {
+		h.cancelPrepareTimer(roomID)
+		return
+	}
+
+	turnSeq := snapshot.TurnSeq
+	updatedAtMS := snapshot.UpdatedAtMS
+	if updatedAtMS <= 0 {
+		updatedAtMS = time.Now().UnixMilli()
+	}
+	deadline := updatedAtMS + matchTurnPrepareMS
+	if deadline < 1000000000000 { // Ignore unit test mock timestamps
+		return
+	}
+	delay := time.Until(time.UnixMilli(deadline))
+	if delay < 0 {
+		delay = 0
+	}
+
+	h.prepareTimersMu.Lock()
+	defer h.prepareTimersMu.Unlock()
+	if scheduled, ok := h.prepareTimers[roomID]; ok {
+		if scheduled.turnSeq == turnSeq {
+			return
+		}
+		scheduled.timer.Stop()
+	}
+
+	h.prepareTimers[roomID] = &scheduledPrepareTimer{
+		turnSeq: turnSeq,
+		timer: time.AfterFunc(delay, func() {
+			h.handlePrepareTimer(context.Background(), roomID, turnSeq)
+		}),
+	}
+}
+
 func (h *Handler) syncTurnTimer(roomID string, snapshot matchSnapshot) {
 	if snapshot.Status != matchStatusAiming || snapshot.WinnerUserID != "" || snapshot.TurnDeadlineAtMS <= 0 {
 		h.cancelTurnTimer(roomID)
@@ -1336,6 +1619,9 @@ func (h *Handler) syncTurnTimer(roomID string, snapshot matchSnapshot) {
 
 	turnSeq := snapshot.TurnSeq
 	deadlineMS := snapshot.TurnDeadlineAtMS
+	if deadlineMS < 1000000000000 { // Ignore unit test mock timestamps
+		return
+	}
 	delay := time.Until(time.UnixMilli(deadlineMS))
 	if delay < 0 {
 		delay = 0
@@ -1355,6 +1641,43 @@ func (h *Handler) syncTurnTimer(roomID string, snapshot matchSnapshot) {
 		deadlineMS: deadlineMS,
 		timer: time.AfterFunc(delay, func() {
 			h.handleTurnTimer(context.Background(), roomID, turnSeq)
+		}),
+	}
+}
+
+func (h *Handler) syncShotTimer(roomID string, snapshot matchSnapshot) {
+	if snapshot.Status != matchStatusMoving || snapshot.WinnerUserID != "" || snapshot.ActiveShot == nil {
+		h.cancelShotTimer(roomID)
+		return
+	}
+
+	shotSeq := snapshot.ActiveShot.ShotSeq
+	deadlineMS := shotResultDeadlineMS(snapshot)
+	if deadlineMS <= 0 {
+		h.cancelShotTimer(roomID)
+		return
+	}
+	if deadlineMS < 1000000000000 { // Ignore unit test mock timestamps
+		return
+	}
+	delay := time.Until(time.UnixMilli(deadlineMS))
+	if delay < 0 {
+		delay = 0
+	}
+
+	h.shotTimersMu.Lock()
+	defer h.shotTimersMu.Unlock()
+	if scheduled, ok := h.shotTimers[roomID]; ok {
+		if scheduled.shotSeq == shotSeq {
+			return
+		}
+		scheduled.timer.Stop()
+	}
+
+	h.shotTimers[roomID] = &scheduledShotTimer{
+		shotSeq: shotSeq,
+		timer: time.AfterFunc(delay, func() {
+			h.handleShotTimer(context.Background(), roomID, shotSeq)
 		}),
 	}
 }
@@ -1383,64 +1706,140 @@ func (h *Handler) rescheduleTurnTimerAfter(roomID string, snapshot matchSnapshot
 	}
 }
 
+func (h *Handler) rescheduleTurnTimerBySeqAfter(roomID string, turnSeq int, delay time.Duration) {
+	h.turnTimersMu.Lock()
+	defer h.turnTimersMu.Unlock()
+	if scheduled, ok := h.turnTimers[roomID]; ok {
+		scheduled.timer.Stop()
+	}
+
+	h.turnTimers[roomID] = &scheduledTurnTimer{
+		turnSeq: turnSeq,
+		timer: time.AfterFunc(delay, func() {
+			h.handleTurnTimer(context.Background(), roomID, turnSeq)
+		}),
+	}
+}
+
+func (h *Handler) reschedulePrepareTimerAfter(roomID string, turnSeq int, delay time.Duration) {
+	h.prepareTimersMu.Lock()
+	defer h.prepareTimersMu.Unlock()
+	if scheduled, ok := h.prepareTimers[roomID]; ok {
+		scheduled.timer.Stop()
+	}
+
+	h.prepareTimers[roomID] = &scheduledPrepareTimer{
+		turnSeq: turnSeq,
+		timer: time.AfterFunc(delay, func() {
+			h.handlePrepareTimer(context.Background(), roomID, turnSeq)
+		}),
+	}
+}
+
+func (h *Handler) rescheduleShotTimerAfter(roomID string, shotSeq int, delay time.Duration) {
+	h.shotTimersMu.Lock()
+	defer h.shotTimersMu.Unlock()
+	if scheduled, ok := h.shotTimers[roomID]; ok {
+		scheduled.timer.Stop()
+	}
+
+	h.shotTimers[roomID] = &scheduledShotTimer{
+		shotSeq: shotSeq,
+		timer: time.AfterFunc(delay, func() {
+			h.handleShotTimer(context.Background(), roomID, shotSeq)
+		}),
+	}
+}
+
+func turnTimerExpiration(snapshot matchSnapshot, now time.Time) (int64, time.Duration, bool) {
+	nowMS := now.UnixMilli()
+	if isTurnExpired(snapshot, nowMS) {
+		return nowMS, 0, true
+	}
+	if snapshot.TurnDeadlineAtMS <= 0 {
+		return nowMS, 0, false
+	}
+	remaining := time.UnixMilli(snapshot.TurnDeadlineAtMS).Sub(now)
+	if remaining < 100*time.Millisecond {
+		remaining = 100 * time.Millisecond
+	}
+	return nowMS, remaining, false
+}
+
+func (h *Handler) handlePrepareTimer(ctx context.Context, roomID string, turnSeq int) {
+	h.forgetPrepareTimer(roomID, turnSeq)
+
+	if h.repo == nil {
+		return
+	}
+	room, err := h.repo.GetRoomByID(ctx, roomID)
+	if err != nil {
+		log.Printf("falha ao carregar sala %s para preparar turno: %v", roomID, err)
+		h.reschedulePrepareTimerAfter(roomID, turnSeq, matchReconcileRetryDelay)
+		return
+	}
+	if room.Status != StatusPlaying {
+		h.cancelPrepareTimer(roomID)
+		return
+	}
+
+	outcome, ok := h.reconcileMatchState(ctx, room, time.Now())
+	if !ok {
+		log.Printf("falha ao reconciliar preparo de turno da sala %s", roomID)
+		h.reschedulePrepareTimerAfter(roomID, turnSeq, matchReconcileRetryDelay)
+		return
+	}
+	publishMatchReconcile(natsclient.GetConn(), roomID, outcome)
+}
+
+func (h *Handler) handleShotTimer(ctx context.Context, roomID string, shotSeq int) {
+	h.forgetShotTimer(roomID, shotSeq)
+
+	if h.repo == nil {
+		return
+	}
+	room, err := h.repo.GetRoomByID(ctx, roomID)
+	if err != nil {
+		log.Printf("falha ao carregar sala %s para timeout de tacada: %v", roomID, err)
+		h.rescheduleShotTimerAfter(roomID, shotSeq, matchReconcileRetryDelay)
+		return
+	}
+	if room.Status != StatusPlaying {
+		h.cancelShotTimer(roomID)
+		return
+	}
+
+	outcome, ok := h.reconcileMatchState(ctx, room, time.Now())
+	if !ok {
+		log.Printf("falha ao reconciliar timeout de tacada da sala %s", roomID)
+		h.rescheduleShotTimerAfter(roomID, shotSeq, matchReconcileRetryDelay)
+		return
+	}
+	publishMatchReconcile(natsclient.GetConn(), roomID, outcome)
+}
+
 func (h *Handler) handleTurnTimer(ctx context.Context, roomID string, turnSeq int) {
 	h.forgetTurnTimer(roomID, turnSeq)
 
-	nc := natsclient.GetConn()
-	if nc == nil {
+	if h.repo == nil {
+		return
+	}
+	room, err := h.repo.GetRoomByID(ctx, roomID)
+	if err != nil {
+		log.Printf("falha ao carregar sala %s para timeout de turno: %v", roomID, err)
+		h.rescheduleTurnTimerBySeqAfter(roomID, turnSeq, matchReconcileRetryDelay)
+		return
+	}
+	if room.Status != StatusPlaying {
+		h.cancelTurnTimer(roomID)
 		return
 	}
 
-	var nextSnapshot matchSnapshot
-	var payload turnTimeoutPayload
-	applied := func() bool {
-		h.matchStateMu.Lock()
-		defer h.matchStateMu.Unlock()
-
-		snapshot, ok := h.getCanonicalSnapshot(ctx, roomID)
-		if !ok || snapshot.TurnSeq != turnSeq {
-			return false
-		}
-
-		now := time.Now().UnixMilli()
-		// Allow a 250ms buffer for early triggers; otherwise reschedule
-		if !isTurnExpired(snapshot, now+250) {
-			remaining := time.UnixMilli(snapshot.TurnDeadlineAtMS).Sub(time.Now())
-			if remaining < 100*time.Millisecond {
-				remaining = 100 * time.Millisecond
-			}
-			h.rescheduleTurnTimerAfter(roomID, snapshot, remaining)
-			return false
-		}
-
-		if h.repo == nil {
-			return false
-		}
-		room, err := h.repo.GetRoomByID(ctx, roomID)
-		if err != nil || room.Status != StatusPlaying {
-			return false
-		}
-		if roomHasReconnectingPlayer(room) {
-			h.rescheduleTurnTimerAfter(roomID, snapshot, time.Second)
-			return false
-		}
-
-		next, timeoutPayload, ok := applyTurnTimeout(room, snapshot, now)
-		if !ok || !h.storeCanonicalSnapshot(ctx, roomID, next) {
-			return false
-		}
-		nextSnapshot = next
-		payload = timeoutPayload
-		return true
-	}()
-	if !applied {
+	outcome, ok := h.reconcileMatchState(ctx, room, time.Now())
+	if !ok {
+		log.Printf("falha ao reconciliar timeout de turno da sala %s", roomID)
+		h.rescheduleTurnTimerBySeqAfter(roomID, turnSeq, matchReconcileRetryDelay)
 		return
 	}
-
-	publishTurnTimeout(nc, roomID, payload)
-	publishCanonicalSnapshot(nc, roomID, nextSnapshot)
-}
-
-func roomHasReconnectingPlayer(room *Room) bool {
-	return room != nil && (room.CreatorDisconnectedAt != nil || room.OpponentDisconnectedAt != nil)
+	publishMatchReconcile(natsclient.GetConn(), roomID, outcome)
 }

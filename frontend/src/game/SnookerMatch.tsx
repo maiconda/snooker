@@ -16,6 +16,7 @@ import { Table3D } from "./components/Table3D";
 import type { RenderedPocket } from "./components/Table3D";
 import { Ball3D } from "./components/Ball3D";
 import { exportAuditState } from "./utils/stateExporter";
+import { Button } from "../components/Button";
 
 export type Scoreboard = {
   creator: number;
@@ -862,15 +863,60 @@ export function SnookerMatch({
     }
   };
 
+  const updatePowerFromEvent = (clientY: number, target: HTMLDivElement) => {
+    const rect = target.getBoundingClientRect();
+    const clickY = clientY - rect.top; // pixel from top of bar
+    const pct = 1 - clickY / rect.height; // percentage from bottom
+    const nextPower = Math.max(0, Math.min(100, Math.round(pct * 100)));
+    handlePowerChange(nextPower);
+  };
+
+  const handlePowerMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!canControlCue) return;
+    const target = e.currentTarget;
+    updatePowerFromEvent(e.clientY, target);
+    
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      updatePowerFromEvent(moveEvent.clientY, target);
+    };
+    const handleMouseUp = () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  };
+
+  const handlePowerTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!canControlCue) return;
+    const target = e.currentTarget;
+    const touch = e.touches[0];
+    updatePowerFromEvent(touch.clientY, target);
+
+    const handleTouchMove = (moveEvent: TouchEvent) => {
+      const t = moveEvent.touches[0];
+      updatePowerFromEvent(t.clientY, target);
+    };
+    const handleTouchEnd = () => {
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleTouchEnd);
+    };
+    window.addEventListener("touchmove", handleTouchMove);
+    window.addEventListener("touchend", handleTouchEnd);
+  };
+
   return (
     <div className="relative h-full min-h-[560px] overflow-hidden bg-[#f8f7f0]">
       {cameraMode === "custom" && (
         <button
-          className="absolute left-4 top-4 z-20 border border-neutral-950 bg-white/90 px-3 py-2 text-xs font-semibold text-neutral-950 transition hover:bg-neutral-950 hover:text-white"
+          className="absolute left-4 top-4 z-20 h-12 px-4 rounded-xl border border-white/10 bg-zinc-950/85 hover:bg-zinc-900 text-white font-bold transition flex items-center gap-2 shadow-lg backdrop-blur-md"
           type="button"
           onClick={() => setCameraMode("default")}
         >
-          Camera padrao
+          <svg className="h-5 w-5 text-neutral-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+          <span className="text-sm font-black">Câmera Padrão</span>
         </button>
       )}
 
@@ -936,38 +982,37 @@ export function SnookerMatch({
         />
       </Canvas>
 
-      <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20">
-        <div className="pointer-events-auto grid gap-3 border border-neutral-950/15 bg-white/88 p-3 shadow-xl backdrop-blur md:grid-cols-[1fr_auto] md:items-center">
-          <div className="grid gap-2">
-            <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-[0.14em] text-neutral-600">
-              <span>Forca</span>
-              <span>{Math.round(power)}%</span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={power}
-              onChange={(event) => handlePowerChange(Number(event.target.value))}
-              disabled={!canControlCue}
-              className="w-full accent-neutral-950 disabled:opacity-40"
-            />
-            <div className="h-2 overflow-hidden bg-neutral-200">
+      <div className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 z-20">
+        <div className={`pointer-events-auto flex flex-col items-center gap-4 bg-zinc-950/90 border border-white/10 p-4 rounded-2xl shadow-2xl backdrop-blur-xl w-24 transition-opacity duration-300 ${
+          canControlCue ? "opacity-100" : "opacity-40 pointer-events-none"
+        }`}>
+          <div className="text-center">
+            <span className="text-[10px] font-black uppercase tracking-widest text-neutral-450 block">Força</span>
+            <span className="text-sm font-black text-white block mt-0.5">{Math.round(power)}%</span>
+          </div>
+
+          {/* Barra Vertical de Força com Borda Gradiente */}
+          <div
+            onMouseDown={handlePowerMouseDown}
+            onTouchStart={handlePowerTouchStart}
+            className="relative w-8 h-48 bg-gradient-to-t from-emerald-500 via-amber-400 to-red-500 p-[2px] rounded-full cursor-pointer select-none"
+          >
+            <div className="h-full w-full bg-zinc-950 rounded-full overflow-hidden relative flex flex-col justify-end">
               <div
-                className="h-full bg-[linear-gradient(90deg,#34d399,#facc15,#ef4444)] transition-[width]"
-                style={{ width: `${power}%` }}
+                className="w-full bg-gradient-to-t from-emerald-500/80 via-amber-400/80 to-red-500/80 transition-all duration-75"
+                style={{ height: `${power}%` }}
               />
             </div>
           </div>
 
-          <button
-            type="button"
+          <Button
             onClick={handleShoot}
             disabled={!canShoot}
-            className="h-11 border border-neutral-950 bg-neutral-950 px-5 text-sm font-semibold text-white transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:border-neutral-300 disabled:bg-neutral-300 disabled:text-neutral-500"
+            variant="solid"
+            className="h-10 w-full text-xs font-black uppercase tracking-wider"
           >
             Tacada
-          </button>
+          </Button>
         </div>
       </div>
     </div>

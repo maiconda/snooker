@@ -31,6 +31,7 @@ type presenceTracker struct {
 type roomConnection struct {
 	RoomID       string
 	ConnectionID string
+	ClientID     string
 }
 
 func newPresenceTracker() *presenceTracker {
@@ -103,17 +104,26 @@ func (p *presenceTracker) RegisterRoomSpectator(roomID string, userID string, co
 	p.roomSpectators[roomID][userID][connectionID] = struct{}{}
 }
 
-func (p *presenceTracker) RegisterRoomConnectionIfFree(roomID string, userID string, connectionID string) (string, bool) {
+func (p *presenceTracker) RegisterRoomConnectionIfFree(roomID string, userID string, connectionID string, clientID string) (string, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if current, ok := p.activeRoomConnections[userID]; ok {
+		if current.RoomID == roomID && current.ClientID != "" && current.ClientID == clientID {
+			p.activeRoomConnections[userID] = roomConnection{
+				RoomID:       roomID,
+				ConnectionID: connectionID,
+				ClientID:     clientID,
+			}
+			return "", true
+		}
 		return current.RoomID, false
 	}
 
 	p.activeRoomConnections[userID] = roomConnection{
 		RoomID:       roomID,
 		ConnectionID: connectionID,
+		ClientID:     clientID,
 	}
 	return "", true
 }

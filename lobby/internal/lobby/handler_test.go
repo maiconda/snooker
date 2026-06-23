@@ -292,7 +292,7 @@ func TestHandler_CreateRoomRejectsSpectatorInOtherRoom(t *testing.T) {
 		c.Next()
 	}, handler.CreateRoom)
 
-	_, ok := handler.presence.RegisterRoomConnectionIfFree("other-room", "user-123", "conn-1")
+	_, ok := handler.presence.RegisterRoomConnectionIfFree("other-room", "user-123", "conn-1", "client-1")
 	assert.True(t, ok)
 	handler.presence.RegisterRoomSpectator("other-room", "user-123", "conn-1")
 
@@ -365,6 +365,7 @@ func TestHandler_GetRoomByID(t *testing.T) {
 	}
 
 	repo.On("GetRoomByID", mock.Anything, "room-uuid").Return(expectedRoom, nil)
+	repo.On("UserHasActiveRoom", mock.Anything, "user-123", "room-uuid").Return(false, nil)
 
 	req, _ := http.NewRequest(http.MethodGet, "/api/v1/rooms/room-uuid", nil)
 	w := httptest.NewRecorder()
@@ -396,6 +397,7 @@ func TestHandler_GetRoomByCode(t *testing.T) {
 	}
 
 	repo.On("GetRoomByCode", mock.Anything, "XYZ999").Return(expectedRoom, nil)
+	repo.On("UserHasActiveRoom", mock.Anything, "user-123", "room-uuid").Return(false, nil)
 
 	req, _ := http.NewRequest(http.MethodGet, "/api/v1/rooms/XYZ999", nil)
 	w := httptest.NewRecorder()
@@ -410,6 +412,62 @@ func TestHandler_GetRoomByCode(t *testing.T) {
 	assert.Equal(t, "room-uuid", resp.ID)
 	assert.Equal(t, "XYZ999", *resp.Code)
 
+	repo.AssertExpectations(t)
+}
+
+func TestHandler_GetRoomRejectsUserConnectedToOtherRoom(t *testing.T) {
+	repo := new(MockRepository)
+	handler := NewHandler(repo)
+	expectNoLifecycleChanges(repo)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/api/v1/rooms/:code_or_id", func(c *gin.Context) {
+		c.Set(httpx.ContextKeyUserID, "user-123")
+		c.Next()
+	}, handler.GetRoom)
+
+	expectedRoom := &Room{
+		ID:        "room-uuid",
+		CreatorID: "user-creator",
+		Status:    StatusWaiting,
+		IsPrivate: false,
+	}
+
+	_, ok := handler.presence.RegisterRoomConnectionIfFree("other-room", "user-123", "conn-1", "client-1")
+	assert.True(t, ok)
+	repo.On("GetRoomByID", mock.Anything, "room-uuid").Return(expectedRoom, nil)
+
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/rooms/room-uuid", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	repo.AssertNotCalled(t, "UserHasActiveRoom", mock.Anything, mock.Anything, mock.Anything)
+	repo.AssertExpectations(t)
+}
+
+func TestHandler_GetRoomRejectsUserPlayingOtherRoom(t *testing.T) {
+	repo := new(MockRepository)
+	router := setupTestRouter(repo)
+
+	expectedRoom := &Room{
+		ID:        "room-uuid",
+		CreatorID: "user-creator",
+		Status:    StatusWaiting,
+		IsPrivate: false,
+	}
+
+	repo.On("GetRoomByID", mock.Anything, "room-uuid").Return(expectedRoom, nil)
+	repo.On("UserHasActiveRoom", mock.Anything, "user-123", "room-uuid").Return(true, nil)
+
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/rooms/room-uuid", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
 	repo.AssertExpectations(t)
 }
 
@@ -526,7 +584,7 @@ func TestHandler_JoinRoomRejectsSpectatorInOtherRoom(t *testing.T) {
 		IsPrivate: false,
 	}
 
-	_, ok := handler.presence.RegisterRoomConnectionIfFree("other-room", "user-123", "conn-1")
+	_, ok := handler.presence.RegisterRoomConnectionIfFree("other-room", "user-123", "conn-1", "client-1")
 	assert.True(t, ok)
 	handler.presence.RegisterRoomSpectator("other-room", "user-123", "conn-1")
 	repo.On("GetRoomByID", mock.Anything, "room-uuid").Return(roomBeforeJoin, nil)
@@ -826,7 +884,7 @@ func TestHandler_HandleWSRejectsSecondTabInSameRoom(t *testing.T) {
 		IsPrivate: false,
 	}
 
-	_, ok := handler.presence.RegisterRoomConnectionIfFree("room-uuid", "user-123", "conn-existing")
+	_, ok := handler.presence.RegisterRoomConnectionIfFree("room-uuid", "user-123", "conn-existing", "client-existing")
 	assert.True(t, ok)
 	repo.On("GetRoomByID", mock.Anything, "room-uuid").Return(expectedRoom, nil)
 
@@ -837,5 +895,89 @@ func TestHandler_HandleWSRejectsSecondTabInSameRoom(t *testing.T) {
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	repo.AssertNotCalled(t, "UserHasActiveRoom", mock.Anything, mock.Anything, mock.Anything)
+	repo.AssertExpectations(t)
+}
+
+func TestReconcileMatchStateAdvancesExpiredTurn(t *testing.T) {
+	repo := new(MockRepository)
+	handler := NewHandler(repo)
+	opponentID := "opponent-1"
+	room := &Room{
+		ID:         "room-uuid",
+		CreatorID:  "creator-1",
+		OpponentID: &opponentID,
+		Status:     StatusPlaying,
+	}
+	snapshot := newInitialMatchSnapshot(room)
+	snapshot.TurnStartedAtMS = 1_000
+	snapshot.TurnDeadlineAtMS = 2_000
+	snapshot.UpdatedAtMS = 1_000
+	raw, err := json.Marshal(snapshot)
+	assert.NoError(t, err)
+	assert.True(t, handler.setCachedSnapshot(room.ID, raw))
+	defer handler.clearCachedSnapshot(room.ID)
+
+	repo.On("UpsertMatchSnapshot", mock.Anything, room.ID, mock.MatchedBy(func(raw json.RawMessage) bool {
+		next, ok := parseCanonicalSnapshot(raw)
+		return ok &&
+			next.TurnUserID == opponentID &&
+			next.TurnSeq == snapshot.TurnSeq+1 &&
+			next.TurnStartedAtMS == 0 &&
+			next.TurnDeadlineAtMS == 0 &&
+			next.Status == matchStatusAiming
+	})).Return(nil).Once()
+
+	outcome, ok := handler.reconcileMatchState(context.Background(), room, time.UnixMilli(2_001))
+
+	assert.True(t, ok)
+	assert.True(t, outcome.changed)
+	assert.NotNil(t, outcome.turnTimeout)
+	assert.Equal(t, opponentID, outcome.snapshot.TurnUserID)
+	assert.Equal(t, snapshot.TurnSeq+1, outcome.snapshot.TurnSeq)
+	assert.Zero(t, outcome.snapshot.TurnDeadlineAtMS)
+	repo.AssertExpectations(t)
+}
+
+func TestReconcileMatchStateStartsClockWhenPrepareTimerWasMissed(t *testing.T) {
+	repo := new(MockRepository)
+	handler := NewHandler(repo)
+	opponentID := "opponent-1"
+	room := &Room{
+		ID:         "room-uuid",
+		CreatorID:  "creator-1",
+		OpponentID: &opponentID,
+		Status:     StatusPlaying,
+	}
+	snapshot := newInitialMatchSnapshot(room)
+	nowMS := time.Now().UnixMilli()
+	snapshot.TurnUserID = opponentID
+	snapshot.TurnSeq = 4
+	snapshot.TurnStartedAtMS = 0
+	snapshot.TurnDeadlineAtMS = 0
+	snapshot.UpdatedAtMS = nowMS - matchTurnPrepareMS
+	raw, err := json.Marshal(snapshot)
+	assert.NoError(t, err)
+	assert.True(t, handler.setCachedSnapshot(room.ID, raw))
+	defer handler.clearCachedSnapshot(room.ID)
+
+	repo.On("UpsertMatchSnapshot", mock.Anything, room.ID, mock.MatchedBy(func(raw json.RawMessage) bool {
+		next, ok := parseCanonicalSnapshot(raw)
+		return ok &&
+			next.TurnUserID == opponentID &&
+			next.TurnSeq == snapshot.TurnSeq &&
+			next.TurnStartedAtMS == nowMS &&
+			next.TurnDeadlineAtMS == nowMS+matchTurnDurationMS &&
+			next.Status == matchStatusAiming
+	})).Return(nil).Once()
+
+	outcome, ok := handler.reconcileMatchState(context.Background(), room, time.UnixMilli(nowMS))
+
+	assert.True(t, ok)
+	assert.True(t, outcome.changed)
+	assert.Nil(t, outcome.turnTimeout)
+	assert.Equal(t, opponentID, outcome.snapshot.TurnUserID)
+	assert.Equal(t, snapshot.TurnSeq, outcome.snapshot.TurnSeq)
+	assert.Equal(t, nowMS, outcome.snapshot.TurnStartedAtMS)
+	assert.Equal(t, nowMS+matchTurnDurationMS, outcome.snapshot.TurnDeadlineAtMS)
 	repo.AssertExpectations(t)
 }

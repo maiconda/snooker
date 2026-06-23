@@ -27,7 +27,9 @@ const (
 	randomPocketMinDistance    = matchPocketRadius * 3.4
 	randomPocketBallClearance  = matchPocketRadius + matchBallRadius*1.9
 
-	matchTurnDurationMS = int64(20_000)
+	matchTurnDurationMS      = int64(20_000)
+	matchTurnPrepareMS       = int64(1_500)
+	matchShotResultTimeoutMS = int64(15_000)
 )
 
 type matchScoreboard struct {
@@ -109,17 +111,15 @@ func newInitialMatchSnapshot(room *Room) matchSnapshot {
 	balls := initMatchBalls()
 	now := time.Now().UnixMilli()
 	snapshot := matchSnapshot{
-		MatchID:          room.ID,
-		Balls:            balls,
-		Pockets:          createServerPockets(room.ID, 0, balls),
-		Scores:           matchScoreboard{},
-		TurnUserID:       room.CreatorID,
-		TurnSeq:          1,
-		TurnStartedAtMS:  now,
-		TurnDeadlineAtMS: now + matchTurnDurationMS,
-		ShotSeq:          0,
-		Status:           matchStatusAiming,
-		UpdatedAtMS:      now,
+		MatchID:     room.ID,
+		Balls:       balls,
+		Pockets:     createServerPockets(room.ID, 0, balls),
+		Scores:      matchScoreboard{},
+		TurnUserID:  room.CreatorID,
+		TurnSeq:     1,
+		ShotSeq:     0,
+		Status:      matchStatusAiming,
+		UpdatedAtMS: now,
 	}
 	snapshot.AuditHash = auditHashForBalls(snapshot.Balls)
 	return snapshot
@@ -134,13 +134,70 @@ func normalizeTurnClock(snapshot matchSnapshot, now int64) matchSnapshot {
 		snapshot.TurnDeadlineAtMS = 0
 		return snapshot
 	}
+	if snapshot.TurnStartedAtMS <= 0 && snapshot.TurnDeadlineAtMS <= 0 {
+		return snapshot
+	}
 	if snapshot.TurnStartedAtMS <= 0 {
-		snapshot.TurnStartedAtMS = now
+		snapshot.TurnStartedAtMS = snapshot.TurnDeadlineAtMS - matchTurnDurationMS
+		if snapshot.TurnStartedAtMS <= 0 {
+			snapshot.TurnStartedAtMS = now
+		}
 	}
 	if snapshot.TurnDeadlineAtMS <= 0 {
 		snapshot.TurnDeadlineAtMS = snapshot.TurnStartedAtMS + matchTurnDurationMS
 	}
 	return snapshot
+}
+
+func turnClockStarted(snapshot matchSnapshot) bool {
+	return snapshot.TurnStartedAtMS > 0 && snapshot.TurnDeadlineAtMS > 0
+}
+
+func turnPrepareDue(snapshot matchSnapshot, now int64) bool {
+	return snapshot.Status == matchStatusAiming &&
+		snapshot.WinnerUserID == "" &&
+		!turnClockStarted(snapshot) &&
+		snapshot.UpdatedAtMS > 0 &&
+		now >= snapshot.UpdatedAtMS+matchTurnPrepareMS
+}
+
+func shotResultDeadlineMS(snapshot matchSnapshot) int64 {
+	if snapshot.ActiveShot == nil {
+		return 0
+	}
+	startedAtMS := snapshot.ActiveShot.ServerStartedAtMS
+	if startedAtMS <= 0 {
+		startedAtMS = snapshot.UpdatedAtMS
+	}
+	if startedAtMS <= 0 {
+		return 0
+	}
+	return startedAtMS + matchShotResultTimeoutMS
+}
+
+func shotResultExpired(snapshot matchSnapshot, now int64) bool {
+	deadlineMS := shotResultDeadlineMS(snapshot)
+	return snapshot.Status == matchStatusMoving &&
+		snapshot.WinnerUserID == "" &&
+		snapshot.ActiveShot != nil &&
+		deadlineMS > 0 &&
+		now >= deadlineMS
+}
+
+func snapshotUpdateTimeAfter(current matchSnapshot, now int64) int64 {
+	if now <= current.UpdatedAtMS {
+		return current.UpdatedAtMS + 1
+	}
+	return now
+}
+
+func startTurnClock(current matchSnapshot, now int64) matchSnapshot {
+	now = snapshotUpdateTimeAfter(current, now)
+	current.TurnStartedAtMS = now
+	current.TurnDeadlineAtMS = now + matchTurnDurationMS
+	current.ActiveShot = nil
+	current.UpdatedAtMS = now
+	return current
 }
 
 func isTurnExpired(snapshot matchSnapshot, now int64) bool {
@@ -457,7 +514,7 @@ func applyShotResult(room *Room, current matchSnapshot, result shotResultPayload
 		}
 	}
 
-	now := time.Now().UnixMilli()
+	now := snapshotUpdateTimeAfter(current, time.Now().UnixMilli())
 	next := matchSnapshot{
 		MatchID:      room.ID,
 		Balls:        nextBalls,
@@ -471,8 +528,8 @@ func applyShotResult(room *Room, current matchSnapshot, result shotResultPayload
 	}
 	if nextStatus == matchStatusAiming {
 		next.TurnSeq = current.TurnSeq + 1
-		next.TurnStartedAtMS = now
-		next.TurnDeadlineAtMS = now + matchTurnDurationMS
+		next.TurnStartedAtMS = 0
+		next.TurnDeadlineAtMS = 0
 	}
 	next.Pockets = sanitizeSubmittedPockets(result.Pockets, room.ID, result.ShotSeq, nextBalls, nextWinnerUserID != "")
 	next.AuditHash = nextAuditHash
@@ -495,11 +552,12 @@ func applyTurnTimeout(room *Room, current matchSnapshot, now int64) (matchSnapsh
 	}
 
 	nextTurnUserID := nextTurnUserIDFor(current.TurnUserID, room.CreatorID, room.OpponentID)
+	now = snapshotUpdateTimeAfter(current, now)
 	next := current
 	next.TurnUserID = nextTurnUserID
 	next.TurnSeq = current.TurnSeq + 1
-	next.TurnStartedAtMS = now
-	next.TurnDeadlineAtMS = now + matchTurnDurationMS
+	next.TurnStartedAtMS = 0
+	next.TurnDeadlineAtMS = 0
 	next.Status = matchStatusAiming
 	next.ActiveShot = nil
 	next.UpdatedAtMS = now
@@ -512,6 +570,61 @@ func applyTurnTimeout(room *Room, current matchSnapshot, now int64) (matchSnapsh
 		NextTurnSeq:      next.TurnSeq,
 		TurnStartedAtMS:  next.TurnStartedAtMS,
 		TurnDeadlineAtMS: next.TurnDeadlineAtMS,
+	}
+	return next, payload, true
+}
+
+type shotResultTimeoutPayload struct {
+	MatchID        string `json:"match_id,omitempty"`
+	ShotSeq        int    `json:"shot_seq"`
+	ShooterUserID  string `json:"shooter_user_id"`
+	NextTurnUserID string `json:"next_turn_user_id"`
+	NextTurnSeq    int    `json:"next_turn_seq"`
+}
+
+func applyShotResultTimeout(room *Room, current matchSnapshot, now int64) (matchSnapshot, shotResultTimeoutPayload, bool) {
+	if current.ActiveShot == nil ||
+		current.Status != matchStatusMoving ||
+		current.WinnerUserID != "" {
+		return current, shotResultTimeoutPayload{}, false
+	}
+
+	shooterUserID := current.ActiveShot.ShooterUserID
+	nextTurnUserID := nextTurnUserIDFor(shooterUserID, room.CreatorID, room.OpponentID)
+	now = snapshotUpdateTimeAfter(current, now)
+
+	nextBalls := append([]matchBall(nil), current.Balls...)
+	for i := range nextBalls {
+		nextBalls[i].VX = 0
+		nextBalls[i].VY = 0
+		nextBalls[i].SpinX = 0
+		nextBalls[i].SpinY = 0
+		nextBalls[i].Sinking = false
+		nextBalls[i].SinkProgress = 0
+		nextBalls[i].SinkStartX = 0
+		nextBalls[i].SinkStartY = 0
+		nextBalls[i].SinkX = 0
+		nextBalls[i].SinkY = 0
+	}
+
+	next := current
+	next.Balls = nextBalls
+	next.Pockets = createServerPockets(room.ID, current.ShotSeq, nextBalls)
+	next.TurnUserID = nextTurnUserID
+	next.TurnSeq = current.TurnSeq + 1
+	next.TurnStartedAtMS = 0
+	next.TurnDeadlineAtMS = 0
+	next.Status = matchStatusAiming
+	next.ActiveShot = nil
+	next.AuditHash = auditHashForBalls(nextBalls)
+	next.UpdatedAtMS = now
+
+	payload := shotResultTimeoutPayload{
+		MatchID:        room.ID,
+		ShotSeq:        current.ActiveShot.ShotSeq,
+		ShooterUserID:  shooterUserID,
+		NextTurnUserID: nextTurnUserID,
+		NextTurnSeq:    next.TurnSeq,
 	}
 	return next, payload, true
 }

@@ -12,9 +12,11 @@ import {
 } from "../game/SnookerMatch";
 import { navigate } from "../lib/router";
 import { getRoom } from "../lobby/lobbyApi";
+import { getRoomClientId } from "../lobby/roomClient";
 import type {
   CueStatePayload,
   MatchFinishedPayload,
+  PresenceUser,
   RematchRequestedPayload,
   Room,
   RoomSpectatorsSnapshot,
@@ -194,6 +196,8 @@ export function GamePage({ roomId }: { roomId: string }) {
     canShoot: false
   });
   const [spectators, setSpectators] = useState(0);
+  const [spectatorList, setSpectatorList] = useState<PresenceUser[]>([]);
+  const [spectatorsOpen, setSpectatorsOpen] = useState(false);
   const [profilesById, setProfilesById] = useState<Record<string, Profile>>({});
   const [matchSummary, setMatchSummary] = useState<MatchSummary | null>(null);
   const [requestedRematches, setRequestedRematches] = useState<string[]>([]);
@@ -354,7 +358,7 @@ export function GamePage({ roomId }: { roomId: string }) {
     const connect = () => {
       let opened = false;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      ws = new WebSocket(`${protocol}//${window.location.host}/api/v1/rooms/${activeRoomId}/ws?token=${token}`);
+      ws = new WebSocket(`${protocol}//${window.location.host}/api/v1/rooms/${activeRoomId}/ws?token=${token}&client_id=${getRoomClientId()}`);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -426,6 +430,12 @@ export function GamePage({ roomId }: { roomId: string }) {
               if (rawPayload && typeof rawPayload === "object" && "spectators" in rawPayload) {
                 const snapshot = rawPayload as RoomSpectatorsSnapshot;
                 setSpectators(snapshot.count);
+                setSpectatorList(snapshot.spectators || []);
+                if (snapshot.spectators) {
+                  snapshot.spectators.forEach((user) => {
+                    ensureProfile(token, user.user_id);
+                  });
+                }
               }
               break;
 
@@ -727,7 +737,7 @@ export function GamePage({ roomId }: { roomId: string }) {
       <main className="flex min-h-screen flex-col items-center justify-center bg-neutral-950 px-6 text-white">
         <h1 className="text-xl font-semibold text-red-500">Partida indisponivel</h1>
         <p className="mt-2 text-sm text-neutral-400">{error ?? "Sala invalida."}</p>
-        <Button onClick={() => navigate("/")} className="mt-8 max-w-xs">
+        <Button onClick={() => navigate("/")} className="mt-8 !w-auto px-6">
           Voltar
         </Button>
       </main>
@@ -753,92 +763,202 @@ export function GamePage({ roomId }: { roomId: string }) {
         />
       </section>
 
-      <header className="pointer-events-none absolute inset-x-0 top-0 z-30 p-3 md:p-4">
-        <div className="pointer-events-auto mx-auto grid max-w-7xl gap-3 md:grid-cols-[1fr_auto]">
-          <div className="grid gap-3 border border-white/10 bg-neutral-950/80 p-3 shadow-xl backdrop-blur md:grid-cols-[1fr_auto] md:items-center">
-            <div>
-              <p className="text-xs uppercase tracking-[0.18em] text-emerald-300">Partida em andamento</p>
-              <h1 className="mt-1 text-lg font-semibold tracking-normal md:text-xl">
-                {creatorName} vs {opponentName}
-              </h1>
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-30 p-4 animate-fade-in flex justify-center">
+        {/* Placar Flutuante Centrado */}
+        <div className="pointer-events-auto flex items-center justify-between gap-6 bg-zinc-950/90 border border-white/10 rounded-2xl px-6 py-3 shadow-2xl backdrop-blur-xl max-w-2xl">
+          {/* Jogador 1 (Dono) */}
+          <div className="flex items-center gap-3">
+            {/* Foto com Temporizador Borda */}
+            <div className="relative h-14 w-14 shrink-0">
+              {turnUserId === room.creator_id && turnRemainingMs > 0 && (
+                <svg className="absolute -inset-1 h-16 w-16 -rotate-90 pointer-events-none" viewBox="0 0 64 64">
+                  <rect
+                    x="2"
+                    y="2"
+                    width="60"
+                    height="60"
+                    rx="12"
+                    className="stroke-amber-400 transition-all duration-100 ease-linear"
+                    strokeWidth="3.5"
+                    fill="none"
+                    strokeDasharray="240"
+                    strokeDashoffset={240 * (1 - turnRemainingMs / 20000)}
+                  />
+                </svg>
+              )}
+              <div className={`h-full w-full overflow-hidden rounded-xl border-2 ${
+                turnUserId === room.creator_id 
+                  ? "border-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.4)]" 
+                  : "border-amber-450/40"
+              } bg-zinc-900`}>
+                {profilesById[room.creator_id]?.photo_url ? (
+                  <img src={profilesById[room.creator_id].photo_url} alt="" className="h-full w-full object-cover" />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center font-bold text-lg bg-amber-500 text-white">
+                    {creatorName.substring(0, 2).toUpperCase()}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-2 text-xs md:min-w-[360px]">
-              <ScoreTile
-                name={creatorName}
-                label="Amarelos"
-                score={scores.creator}
-                active={turnUserId === room.creator_id}
-                reconnecting={creatorDisconnected}
-                tone="creator"
-                xpAward={xpByUserId[room.creator_id]}
-              />
-              <ScoreTile
-                name={opponentName}
-                label="Azuis"
-                score={scores.opponent}
-                active={turnUserId === room.opponent_id}
-                reconnecting={opponentDisconnected}
-                tone="opponent"
-                xpAward={room.opponent_id ? xpByUserId[room.opponent_id] : undefined}
-              />
+
+            <div className="text-left max-w-[120px] md:max-w-[150px]">
+              <div className="flex items-center gap-1.5">
+                <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-[0_0_6px_rgba(245,158,11,0.8)] shrink-0" title="Amarelos" />
+                <p className="text-sm font-black text-white truncate">{creatorName}</p>
+              </div>
+              {creatorDisconnected && (
+                <span className="text-[9px] font-bold text-sky-400 animate-pulse block mt-0.5">Reconectando</span>
+              )}
             </div>
+
+            <span className="text-3xl font-black text-white tracking-tighter ml-2 bg-white/5 border border-white/10 px-3 py-1 rounded-lg min-w-10 text-center">
+              {scores.creator}
+            </span>
           </div>
 
-          <div className="flex flex-wrap items-stretch gap-2 md:justify-end">
-            <StatusPill label="Turno" value={activeName} />
-            <StatusPill label="Tempo" value={turnRemainingText} />
-            <StatusPill label="Status" value={statusText(hud.status, room.status)} />
-            <StatusPill label="Forca" value={`${Math.round(hud.power)}%`} />
-            <StatusPill label="Espectadores" value={String(spectators)} />
-            <button
-              type="button"
-              onClick={() => setChatOpen((open) => !open)}
-              className="border border-white/15 bg-neutral-950/80 px-3 py-2 text-sm font-semibold text-white backdrop-blur transition hover:border-white/40"
-            >
-              Chat {unreadMessages > 0 && !chatOpen ? `(${unreadMessages})` : messages.length > 0 ? `(${messages.length})` : ""}
-            </button>
+          {/* Divisor VS */}
+          <div className="text-[10px] font-black text-neutral-500 tracking-widest px-1 uppercase">VS</div>
+
+          {/* Jogador 2 (Oponente) */}
+          <div className="flex items-center gap-3">
+            <span className="text-3xl font-black text-white tracking-tighter mr-2 bg-white/5 border border-white/10 px-3 py-1 rounded-lg min-w-10 text-center">
+              {scores.opponent}
+            </span>
+
+            <div className="text-right max-w-[120px] md:max-w-[150px]">
+              <div className="flex items-center justify-end gap-1.5">
+                <p className="text-sm font-black text-white truncate">{opponentName}</p>
+                <span className="h-2.5 w-2.5 rounded-full bg-sky-500 shadow-[0_0_6px_rgba(14,165,233,0.8)] shrink-0" title="Azuis" />
+              </div>
+              {opponentDisconnected && (
+                <span className="text-[9px] font-bold text-sky-400 animate-pulse block mt-0.5">Reconectando</span>
+              )}
+            </div>
+
+            {/* Foto com Temporizador Borda */}
+            <div className="relative h-14 w-14 shrink-0">
+              {room.opponent_id && turnUserId === room.opponent_id && turnRemainingMs > 0 && (
+                <svg className="absolute -inset-1 h-16 w-16 -rotate-90 pointer-events-none" viewBox="0 0 64 64">
+                  <rect
+                    x="2"
+                    y="2"
+                    width="60"
+                    height="60"
+                    rx="12"
+                    className="stroke-sky-400 transition-all duration-100 ease-linear"
+                    strokeWidth="3.5"
+                    fill="none"
+                    strokeDasharray="240"
+                    strokeDashoffset={240 * (1 - turnRemainingMs / 20000)}
+                  />
+                </svg>
+              )}
+              <div className={`h-full w-full overflow-hidden rounded-xl border-2 ${
+                room.opponent_id 
+                  ? turnUserId === room.opponent_id 
+                    ? "border-sky-500 shadow-[0_0_12px_rgba(14,165,233,0.4)]" 
+                    : "border-sky-550/40"
+                  : "border-neutral-750 border-dashed"
+              } bg-zinc-900`}>
+                {room.opponent_id ? (
+                  profilesById[room.opponent_id]?.photo_url ? (
+                    <img src={profilesById[room.opponent_id].photo_url} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center font-bold text-lg bg-sky-500 text-white">
+                      {opponentName.substring(0, 2).toUpperCase()}
+                    </div>
+                  )
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-neutral-600">
+                    <span className="text-xl font-bold">+</span>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </header>
 
+      {/* Botões de Ação de HUD (Chat e Espectadores) */}
+      <div className="absolute top-4 right-4 z-30 flex gap-2">
+        {/* Espectadores */}
+        <button
+          type="button"
+          onClick={() => {
+            setSpectatorsOpen((open) => !open);
+            setChatOpen(false);
+          }}
+          className="h-12 px-4 rounded-xl border border-white/10 bg-zinc-950/85 hover:bg-zinc-900 text-white font-bold transition flex items-center gap-2 shadow-lg backdrop-blur-md"
+          title="Ver espectadores"
+        >
+          <svg className="h-5 w-5 text-neutral-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+          </svg>
+          <span className="text-sm font-black">{spectators}</span>
+        </button>
+
+        {/* Chat */}
+        <button
+          type="button"
+          onClick={() => {
+            setChatOpen((open) => !open);
+            setSpectatorsOpen(false);
+            setUnreadMessages(0);
+          }}
+          className="relative h-12 w-12 rounded-xl border border-white/10 bg-zinc-950/85 hover:bg-zinc-900 text-white transition flex items-center justify-center shadow-lg backdrop-blur-md"
+          title="Ver chat"
+        >
+          <svg className="h-5 w-5 text-neutral-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+          </svg>
+          {unreadMessages > 0 && !chatOpen && (
+            <span className="absolute -top-1.5 -right-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-black text-white shadow-md animate-pulse">
+              {unreadMessages}
+            </span>
+          )}
+        </button>
+      </div>
+
       {hasReconnectingPlayer && (
-        <div className="pointer-events-none absolute left-1/2 top-32 z-30 w-[min(92vw,720px)] -translate-x-1/2 border border-amber-400/30 bg-amber-400/15 px-4 py-3 text-sm text-amber-50 shadow-xl backdrop-blur">
+        <div className="pointer-events-none absolute left-1/2 top-36 z-30 w-[min(92vw,720px)] -translate-x-1/2 border border-amber-400/20 bg-amber-500/10 px-4 py-3 rounded-xl text-xs font-semibold text-amber-300 shadow-xl backdrop-blur-md text-center animate-pulse">
           {creatorDisconnected && opponentDisconnected
-            ? "Os dois jogadores estao reconectando. A partida fica pausada para manter a simulacao consistente."
-            : `${creatorDisconnected ? creatorName : opponentName} esta reconectando. A sala permanece viva enquanto aguardamos o retorno.`}
+            ? "Os dois jogadores estão reconectando. A partida fica pausada para manter a simulação consistente."
+            : `${creatorDisconnected ? creatorName : opponentName} está reconectando. A sala permanece viva enquanto aguardamos o retorno.`}
         </div>
       )}
 
+      {/* Drawer do Chat */}
       <aside
-        className={`absolute bottom-4 right-3 top-32 z-40 flex w-[min(92vw,380px)] max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden border border-white/10 bg-neutral-950/92 shadow-2xl backdrop-blur transition duration-200 md:right-4 md:max-w-[calc(100vw-2rem)] ${
+        className={`fixed right-4 top-4 bottom-4 z-50 flex w-[min(90vw,360px)] flex-col overflow-hidden rounded-2xl border border-white/10 bg-zinc-950/95 shadow-2xl backdrop-blur-xl transition-all duration-300 transform ${
           chatOpen ? "translate-x-0 opacity-100" : "pointer-events-none translate-x-[calc(100%+2rem)] opacity-0"
         }`}
       >
-        <header className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-          <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-neutral-300">Chat</h2>
+        <header className="flex items-center justify-between border-b border-white/10 px-4 py-3 bg-zinc-950/40">
+          <h2 className="text-sm font-bold uppercase tracking-[0.2em] text-neutral-300">Chat da Partida</h2>
           <button
             type="button"
             onClick={() => setChatOpen(false)}
-            className="h-8 w-8 border border-white/10 text-sm text-neutral-300 transition hover:border-white/40 hover:text-white"
+            className="h-8 w-8 rounded-lg border border-white/5 text-sm text-neutral-400 transition hover:border-white/20 hover:text-white flex items-center justify-center"
             aria-label="Fechar chat"
           >
-            x
+            ×
           </button>
         </header>
 
-        <div className="flex-1 space-y-3 overflow-y-auto p-4">
+        <div className="flex-1 space-y-3 overflow-y-auto p-4 scrollbar-thin">
           {messages.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-center text-xs text-neutral-600">
+            <div className="flex h-full items-center justify-center text-center text-xs text-neutral-600 font-medium">
               Nenhuma mensagem nesta partida.
             </div>
           ) : (
             messages.map((message) => (
               <div key={message.messageId} className={`flex w-full min-w-0 flex-col ${message.senderId === userId ? "items-end" : "items-start"}`}>
-                <span className="mb-1 max-w-[86%] truncate px-1 text-[10px] text-neutral-500">{message.senderName}</span>
-                <div className={`max-w-[86%] overflow-hidden break-words px-3 py-2 text-sm [overflow-wrap:anywhere] ${
+                <span className="mb-0.5 max-w-[86%] truncate px-1 text-[10px] text-neutral-500 font-bold">{message.senderName}</span>
+                <div className={`max-w-[86%] overflow-hidden break-words px-3.5 py-1.5 text-sm [overflow-wrap:anywhere] border ${
                   message.senderId === userId
-                    ? "bg-emerald-600 text-white"
-                    : "bg-white/10 text-neutral-200"
+                    ? "bg-red-500/10 border-red-500/20 dark:bg-red-600/20 dark:border-red-500/20 text-red-100 rounded-xl rounded-tr-none"
+                    : "bg-white/[0.04] border-white/5 text-neutral-200 rounded-xl rounded-tl-none"
                 }`}>
                   {message.text}
                 </div>
@@ -848,23 +968,72 @@ export function GamePage({ roomId }: { roomId: string }) {
           <div ref={chatEndRef} />
         </div>
 
-        <form onSubmit={handleSendChat} className="flex gap-2 border-t border-white/10 p-3">
+        <form onSubmit={handleSendChat} className="flex gap-2 border-t border-white/10 p-3 bg-zinc-950/20">
           <input
             type="text"
             value={messageText}
             onChange={(event) => setMessageText(event.target.value)}
             disabled={!isParticipant}
-            placeholder={isParticipant ? "Mensagem..." : "Espectadores apenas leem"}
-            className="min-w-0 flex-1 border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white placeholder-neutral-600 outline-none focus:border-emerald-500 disabled:opacity-50"
+            placeholder={isParticipant ? "Mensagem..." : "Apenas leitura"}
+            className="min-w-0 flex-1 rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white placeholder-neutral-600 outline-none focus:border-red-500/60 focus:ring-2 focus:ring-red-500/10 disabled:opacity-50 transition-all"
           />
           <button
             type="submit"
             disabled={!isParticipant || !messageText.trim()}
-            className="border border-emerald-500 bg-emerald-600 px-3 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:border-neutral-800 disabled:bg-neutral-800 disabled:text-neutral-600"
+            className="flex items-center justify-center h-10 w-10 shrink-0 rounded-lg bg-red-600 hover:bg-red-500 disabled:bg-neutral-800 disabled:text-neutral-600 text-white transition active:scale-95 shadow-md"
+            aria-label="Enviar mensagem"
           >
-            Enviar
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+            </svg>
           </button>
         </form>
+      </aside>
+
+      {/* Drawer de Espectadores */}
+      <aside
+        className={`fixed right-4 top-4 bottom-4 z-50 flex w-[min(90vw,320px)] flex-col overflow-hidden rounded-2xl border border-white/10 bg-zinc-950/95 shadow-2xl backdrop-blur-xl transition-all duration-300 transform ${
+          spectatorsOpen ? "translate-x-0 opacity-100" : "pointer-events-none translate-x-[calc(100%+2rem)] opacity-0"
+        }`}
+      >
+        <header className="flex items-center justify-between border-b border-white/10 px-4 py-3 bg-zinc-950/40">
+          <h2 className="text-sm font-bold uppercase tracking-[0.2em] text-neutral-300">Espectadores ({spectators})</h2>
+          <button
+            type="button"
+            onClick={() => setSpectatorsOpen(false)}
+            className="h-8 w-8 rounded-lg border border-white/5 text-sm text-neutral-400 transition hover:border-white/20 hover:text-white flex items-center justify-center"
+            aria-label="Fechar espectadores"
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="flex-1 space-y-3 overflow-y-auto p-4 scrollbar-thin">
+          {spectatorList.length === 0 ? (
+            <div className="flex h-full items-center justify-center text-center text-xs text-neutral-600 font-medium">
+              Nenhum espectador assistindo.
+            </div>
+          ) : (
+            spectatorList.map((spec) => {
+              const specName = profilesById[spec.user_id]?.nickname ?? "Carregando...";
+              const specPhoto = profilesById[spec.user_id]?.photo_url;
+              return (
+                <div key={spec.user_id} className="flex items-center gap-3 rounded-xl bg-white/[0.02] border border-white/5 px-3 py-2">
+                  <div className="h-8 w-8 rounded-lg overflow-hidden border border-white/10 bg-zinc-800 shrink-0">
+                    {specPhoto ? (
+                      <img src={specPhoto} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center font-bold text-xs bg-neutral-700 text-white">
+                        {specName.substring(0, 2).toUpperCase()}
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-sm font-semibold text-neutral-250 truncate">{specName}</span>
+                </div>
+              );
+            })
+          )}
+        </div>
       </aside>
 
       {matchSummary && (
@@ -905,20 +1074,30 @@ function ScoreTile({
   tone: "creator" | "opponent";
   xpAward?: XPAward;
 }) {
-  const color = tone === "creator" ? "bg-amber-300" : "bg-sky-400";
+  const ballStyle = tone === "creator" 
+    ? "bg-gradient-to-br from-yellow-300 via-amber-400 to-amber-600 shadow-[inset_-2px_-2px_4px_rgba(0,0,0,0.5),_0_0_8px_rgba(245,158,11,0.4)]" 
+    : "bg-gradient-to-br from-sky-300 via-sky-500 to-blue-700 shadow-[inset_-2px_-2px_4px_rgba(0,0,0,0.5),_0_0_8px_rgba(14,165,233,0.4)]";
 
   return (
-    <div className={`border p-2 ${active ? "border-emerald-300/60 bg-emerald-400/10" : "border-white/10 bg-white/5"}`}>
+    <div className={`rounded-xl border p-3.5 transition-all duration-300 shadow-lg ${
+      active 
+        ? "border-red-500 bg-red-50 dark:bg-red-950/20 shadow-[0_0_12px_rgba(239,68,68,0.1)] dark:shadow-[0_0_12px_rgba(239,68,68,0.15)]" 
+        : "border-neutral-200 dark:border-white/5 bg-neutral-50 dark:bg-zinc-900/40"
+    }`}>
       <div className="flex items-center justify-between gap-2">
-        <span className={`h-2.5 w-2.5 ${color}`} />
-        <span className="truncate text-[10px] uppercase tracking-[0.14em] text-neutral-500">{label}</span>
-      </div>
-      <p className="mt-1 truncate text-sm font-semibold text-white">{name}</p>
-      <div className="mt-1 flex items-end justify-between gap-2">
-        <strong className="text-2xl leading-none text-white">{score}</strong>
-        <span className={`text-[10px] font-semibold ${reconnecting ? "text-amber-300" : active ? "text-emerald-300" : "text-neutral-500"}`}>
-          {reconnecting ? "Reconectando" : active ? "Turno" : xpAward ? `+${xpAward.xp_delta} XP` : "Online"}
+        <div className="flex items-center gap-2">
+          <span className={`h-3.5 w-3.5 rounded-full ${ballStyle}`} />
+          <span className="truncate text-[9px] uppercase tracking-[0.2em] text-neutral-550 dark:text-neutral-500 font-bold">{label}</span>
+        </div>
+        <span className={`text-[9px] font-bold tracking-wider uppercase ${
+          reconnecting ? "text-amber-400 animate-pulse" : active ? "text-red-600 dark:text-red-400 animate-pulse" : "text-neutral-500"
+        }`}>
+          {reconnecting ? "Recon." : active ? "Turno" : xpAward ? `+${xpAward.xp_delta} XP` : "Online"}
         </span>
+      </div>
+      <p className="mt-2 truncate text-sm font-extrabold text-neutral-800 dark:text-white">{name}</p>
+      <div className="mt-1 flex items-baseline justify-between">
+        <strong className="text-3xl font-black leading-none text-neutral-900 dark:text-white tracking-tighter">{score}</strong>
       </div>
     </div>
   );
@@ -926,12 +1105,17 @@ function ScoreTile({
 
 function StatusPill({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-24 border border-white/10 bg-neutral-950/80 px-3 py-2 backdrop-blur">
-      <p className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">{label}</p>
-      <p className="truncate text-sm font-semibold text-white">{value}</p>
+    <div className="min-w-24 rounded-lg border border-neutral-200 dark:border-white/5 bg-white/95 dark:bg-zinc-905/90 px-3.5 py-2.5 backdrop-blur-md shadow-lg">
+      <p className="text-[9px] uppercase tracking-[0.2em] font-bold text-neutral-550 dark:text-neutral-500">{label}</p>
+      <p className="truncate text-xs font-black tracking-wide text-neutral-900 dark:text-white mt-0.5">{value}</p>
     </div>
   );
 }
+
+type XPAwardType = {
+  user_id: string;
+  xp_delta: number;
+};
 
 function MatchFinishedOverlay({
   isCreator,
@@ -955,7 +1139,7 @@ function MatchFinishedOverlay({
   creatorName: string;
   opponentName: string;
   scores: Scoreboard;
-  xpAwards: XPAward[];
+  xpAwards: XPAwardType[];
   profilesById: Record<string, Profile>;
   onRequestRematch: () => void;
   onCloseRoom: () => void;
@@ -963,51 +1147,53 @@ function MatchFinishedOverlay({
   onLobby: () => void;
 }) {
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-neutral-950/72 p-4 backdrop-blur-sm">
-      <section className="w-full max-w-xl border border-white/10 bg-neutral-950 p-5 text-white shadow-2xl">
-        <p className="text-xs uppercase tracking-[0.18em] text-emerald-300">Partida finalizada</p>
-        <h2 className="mt-2 text-2xl font-semibold tracking-normal">
-          {winnerName ? `${winnerName} venceu` : "Resultado registrado"}
-        </h2>
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-neutral-950/80 p-4 backdrop-blur-md animate-fade-in">
+      <section className="w-full max-w-lg rounded-2xl border border-neutral-200 dark:border-white/10 bg-white dark:bg-zinc-950/95 p-8 text-neutral-900 dark:text-white shadow-2xl shadow-neutral-200/50 dark:shadow-black/90">
+        <div className="text-center mb-6">
+          <p className="text-xs uppercase tracking-[0.25em] text-red-600 dark:text-red-400 font-bold">Partida Finalizada</p>
+          <h2 className="mt-2 text-3xl font-black tracking-tight text-neutral-900 dark:text-white">
+            {winnerName ? `${winnerName} Venceu!` : "Resultado Registrado"}
+          </h2>
+        </div>
 
-        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2">
           <ResultScore name={creatorName} label="Amarelos" score={scores.creator} />
           <ResultScore name={opponentName} label="Azuis" score={scores.opponent} />
         </div>
 
-        <div className="mt-5 border border-white/10 bg-white/5 p-3">
-          <p className="text-xs uppercase tracking-[0.14em] text-neutral-500">XP da partida</p>
-          <div className="mt-3 grid gap-2">
+        <div className="mt-6 rounded-xl border border-neutral-200 dark:border-white/5 bg-neutral-50 dark:bg-white/[0.02] p-4 shadow-inner">
+          <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-550 dark:text-neutral-500 font-bold border-b border-neutral-200 dark:border-white/5 pb-2 mb-3">Recompensas de XP</p>
+          <div className="space-y-2">
             {xpAwards.length === 0 ? (
-              <p className="text-sm text-neutral-400">Aguardando confirmacao do servidor.</p>
+              <p className="text-xs text-neutral-550 dark:text-neutral-500 italic">Aguardando confirmação do servidor...</p>
             ) : (
               xpAwards.map((award) => (
                 <div key={award.user_id} className="flex items-center justify-between text-sm">
-                  <span className="truncate text-neutral-300">{profilesById[award.user_id]?.nickname ?? "Jogador"}</span>
-                  <strong className="text-emerald-300">+{award.xp_delta} XP</strong>
+                  <span className="truncate text-neutral-700 dark:text-neutral-300 font-medium">{profilesById[award.user_id]?.nickname ?? "Jogador"}</span>
+                  <strong className="text-red-650 dark:text-red-450 font-bold">+{award.xp_delta} XP</strong>
                 </div>
               ))
             )}
           </div>
         </div>
 
-        <div className="mt-6 grid gap-3 sm:grid-cols-2">
+        <div className="mt-8 grid gap-3 sm:grid-cols-2">
           {isParticipant && (
             <Button onClick={onRequestRematch} disabled={currentUserRequestedRematch}>
-              {currentUserRequestedRematch ? "Revanche solicitada" : "Pedir revanche"}
+              {currentUserRequestedRematch ? "Revanche solicitada" : "Pedir Revanche"}
             </Button>
           )}
           {isCreator ? (
             <Button variant="outline" onClick={onCloseRoom}>
-              Encerrar sala
+              Encerrar Sala
             </Button>
           ) : (
             <Button variant="outline" onClick={onLeave}>
-              Sair da sala
+              Sair da Sala
             </Button>
           )}
           <Button variant="outline" onClick={onLobby} className="sm:col-span-2">
-            Voltar ao lobby
+            Voltar ao Lobby
           </Button>
         </div>
       </section>
@@ -1017,10 +1203,10 @@ function MatchFinishedOverlay({
 
 function ResultScore({ name, label, score }: { name: string; label: string; score: number }) {
   return (
-    <div className="border border-white/10 bg-white/5 p-3">
-      <p className="truncate text-sm font-semibold text-white">{name}</p>
-      <p className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">{label}</p>
-      <strong className="mt-3 block text-3xl leading-none text-white">{score}</strong>
+    <div className="rounded-xl border border-neutral-200 dark:border-white/5 bg-neutral-50 dark:bg-zinc-900/40 p-4 shadow-inner text-center">
+      <p className="truncate text-sm font-bold text-neutral-800 dark:text-white">{name}</p>
+      <p className="text-[9px] uppercase tracking-[0.2em] text-neutral-550 dark:text-neutral-500 font-bold mt-1">{label}</p>
+      <strong className="mt-3 block text-4xl font-black leading-none text-neutral-900 dark:text-white tracking-tighter">{score}</strong>
     </div>
   );
 }
@@ -1033,8 +1219,9 @@ function statusText(gameStatus: MatchHudState["status"], roomStatus: Room["statu
     case "striking":
       return "Tacada";
     case "moving":
-      return "Movimento";
+      return "Rolando";
     default:
       return "Finalizada";
   }
 }
+

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -168,7 +169,8 @@ func TestServerAppliesShotResultRulesFromCanonicalBallIDs(t *testing.T) {
 	assert.Equal(t, 0, next.Scores.Opponent)
 	assert.Equal(t, "creator-1", next.TurnUserID)
 	assert.Equal(t, current.TurnSeq+1, next.TurnSeq)
-	assert.Equal(t, matchTurnDurationMS, next.TurnDeadlineAtMS-next.TurnStartedAtMS)
+	assert.Zero(t, next.TurnStartedAtMS)
+	assert.Zero(t, next.TurnDeadlineAtMS)
 	assert.Equal(t, matchStatusAiming, next.Status)
 	assert.Nil(t, next.ActiveShot)
 	assert.NotEmpty(t, next.AuditHash)
@@ -240,7 +242,7 @@ func TestServerAcceptsShotResultWithPreviousClientShotSeq(t *testing.T) {
 	assert.Equal(t, matchStatusAiming, next.Status)
 }
 
-func TestInitialSnapshotStartsTimedTurn(t *testing.T) {
+func TestInitialSnapshotWaitsForTurnReady(t *testing.T) {
 	room := &Room{
 		ID:        "room-1",
 		CreatorID: "creator-1",
@@ -251,7 +253,24 @@ func TestInitialSnapshotStartsTimedTurn(t *testing.T) {
 	assert.Equal(t, 1, snapshot.TurnSeq)
 	assert.Equal(t, "creator-1", snapshot.TurnUserID)
 	assert.Equal(t, matchStatusAiming, snapshot.Status)
-	assert.Equal(t, matchTurnDurationMS, snapshot.TurnDeadlineAtMS-snapshot.TurnStartedAtMS)
+	assert.Zero(t, snapshot.TurnStartedAtMS)
+	assert.Zero(t, snapshot.TurnDeadlineAtMS)
+}
+
+func TestStartTurnClockArmsTimedTurn(t *testing.T) {
+	room := &Room{
+		ID:        "room-1",
+		CreatorID: "creator-1",
+	}
+	snapshot := newInitialMatchSnapshot(room)
+
+	ready := startTurnClock(snapshot, snapshot.UpdatedAtMS)
+
+	assert.Equal(t, 1, ready.TurnSeq)
+	assert.Equal(t, "creator-1", ready.TurnUserID)
+	assert.Equal(t, matchStatusAiming, ready.Status)
+	assert.Greater(t, ready.UpdatedAtMS, snapshot.UpdatedAtMS)
+	assert.Equal(t, matchTurnDurationMS, ready.TurnDeadlineAtMS-ready.TurnStartedAtMS)
 }
 
 func TestApplyTurnTimeoutPassesTurnWithoutChangingTable(t *testing.T) {
@@ -277,10 +296,103 @@ func TestApplyTurnTimeoutPassesTurnWithoutChangingTable(t *testing.T) {
 	assert.Equal(t, current.Scores, next.Scores)
 	assert.Equal(t, current.Balls, next.Balls)
 	assert.Equal(t, current.Pockets, next.Pockets)
+	assert.Zero(t, next.TurnStartedAtMS)
+	assert.Zero(t, next.TurnDeadlineAtMS)
 	assert.Equal(t, "creator-1", payload.TimedOutUserID)
 	assert.Equal(t, "opponent-1", payload.NextTurnUserID)
 	assert.Equal(t, 4, payload.NextTurnSeq)
-	assert.Equal(t, matchTurnDurationMS, payload.TurnDeadlineAtMS-payload.TurnStartedAtMS)
+	assert.Zero(t, payload.TurnStartedAtMS)
+	assert.Zero(t, payload.TurnDeadlineAtMS)
+}
+
+func TestTurnTimerReschedulesBeforeDeadline(t *testing.T) {
+	room := &Room{
+		ID:        "room-1",
+		CreatorID: "creator-1",
+	}
+	current := newInitialMatchSnapshot(room)
+	current.TurnStartedAtMS = 1_000
+	current.TurnDeadlineAtMS = 2_000
+
+	now, remaining, expired := turnTimerExpiration(current, time.UnixMilli(1_999))
+	_, _, applied := applyTurnTimeout(room, current, now)
+
+	assert.False(t, expired)
+	assert.False(t, applied)
+	assert.Equal(t, int64(1_999), now)
+	assert.Equal(t, 100*time.Millisecond, remaining)
+}
+
+func TestTurnTimerAppliesAtDeadline(t *testing.T) {
+	opponentID := "opponent-1"
+	room := &Room{
+		ID:         "room-1",
+		CreatorID:  "creator-1",
+		OpponentID: &opponentID,
+	}
+	current := newInitialMatchSnapshot(room)
+	current.TurnStartedAtMS = 1_000
+	current.TurnDeadlineAtMS = 2_000
+
+	now, remaining, expired := turnTimerExpiration(current, time.UnixMilli(2_000))
+	next, _, applied := applyTurnTimeout(room, current, now)
+
+	assert.True(t, expired)
+	assert.True(t, applied)
+	assert.Zero(t, remaining)
+	assert.Equal(t, "opponent-1", next.TurnUserID)
+}
+
+func TestApplyShotResultTimeoutRecoversStuckMovingShot(t *testing.T) {
+	opponentID := "opponent-1"
+	room := &Room{
+		ID:         "room-1",
+		CreatorID:  "creator-1",
+		OpponentID: &opponentID,
+	}
+	current := newInitialMatchSnapshot(room)
+	current.TurnSeq = 3
+	current.ShotSeq = 2
+	current.Status = matchStatusMoving
+	current.TurnUserID = "creator-1"
+	current.UpdatedAtMS = 1_000
+	current.Balls[1].VX = 2
+	current.Balls[1].VY = -1
+	current.Balls[1].SpinX = 40
+	current.Balls[1].SpinY = -25
+	current.Balls[1].Sinking = true
+	current.Balls[1].SinkProgress = 0.5
+	current.ActiveShot = &activeShotState{
+		ShotSeq:           2,
+		ShooterUserID:     "creator-1",
+		Angle:             0.4,
+		Power:             50,
+		ServerStartedAtMS: 900,
+	}
+
+	next, payload, ok := applyShotResultTimeout(room, current, 2_000)
+
+	assert.True(t, ok)
+	assert.Equal(t, "opponent-1", next.TurnUserID)
+	assert.Equal(t, 4, next.TurnSeq)
+	assert.Equal(t, 2, next.ShotSeq)
+	assert.Equal(t, matchStatusAiming, next.Status)
+	assert.Nil(t, next.ActiveShot)
+	assert.Zero(t, next.TurnStartedAtMS)
+	assert.Zero(t, next.TurnDeadlineAtMS)
+	assert.Zero(t, next.Balls[1].VX)
+	assert.Zero(t, next.Balls[1].VY)
+	assert.Zero(t, next.Balls[1].SpinX)
+	assert.Zero(t, next.Balls[1].SpinY)
+	assert.False(t, next.Balls[1].Sinking)
+	assert.Zero(t, next.Balls[1].SinkProgress)
+	assert.Equal(t, createServerPockets(room.ID, current.ShotSeq, next.Balls), next.Pockets)
+	assert.Equal(t, auditHashForBalls(next.Balls), next.AuditHash)
+	assert.Greater(t, next.UpdatedAtMS, current.UpdatedAtMS)
+	assert.Equal(t, "creator-1", payload.ShooterUserID)
+	assert.Equal(t, 2, payload.ShotSeq)
+	assert.Equal(t, "opponent-1", payload.NextTurnUserID)
+	assert.Equal(t, 4, payload.NextTurnSeq)
 }
 
 func TestServerRejectsShotResultFromWrongShooter(t *testing.T) {
