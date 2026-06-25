@@ -1,14 +1,3 @@
-# ==============================================================================
-# Docker Compose para Ambiente de PRODUÇÃO (Prod)
-# ==============================================================================
-# Este arquivo é otimizado para implantação em produção:
-# - Compilação de produção multistage de todos os serviços (incluindo o Frontend via Nginx).
-# - O Frontend (Nginx) serve como o único ponto de entrada exposto (Reverse Proxy).
-# - Portas do NATS, bancos de dados, MinIO e APIs de backend NÃO são expostas ao host
-#   (isolamento completo da rede para maior segurança).
-# - Não há montagem de volumes de código (apenas volumes nomeados para persistência).
-# ==============================================================================
-
 services:
   # ----------------------------------------------------------------------------
   # Servidores de Banco de Dados (PostgreSQL) - Sem portas expostas ao host

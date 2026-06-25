@@ -1,13 +1,3 @@
-# ==============================================================================
-# Docker Compose para Ambiente de DESENVOLVIMENTO (Dev)
-# ==============================================================================
-# Este arquivo é otimizado para o fluxo de desenvolvimento local:
-# - Montagem de volumes locais para Hot Module Replacement (HMR) no frontend/game-core.
-# - Exposição de todas as portas dos serviços e bancos de dados para acesso externo
-#   (permitindo conexões via DBeaver, NATS clients, postman, etc.).
-# - Inicialização dinâmica com comandos de desenvolvimento (npm run dev).
-# ==============================================================================
-
 services:
   # ----------------------------------------------------------------------------
   # Servidores de Banco de Dados (PostgreSQL) expostos para o host
