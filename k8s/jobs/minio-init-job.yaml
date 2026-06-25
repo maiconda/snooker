@@ -23,7 +23,7 @@ spec:
       serviceAccountName: snooker-job
       containers:
         - name: minio-init
-          image: minio/mc:latest
+          image: minio/mc:RELEASE.2024-06-06T10-44-48Z
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh

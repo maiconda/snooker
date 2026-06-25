@@ -32,20 +32,20 @@ type CueBallPosition = { x: number; y: number };
 type CameraMode = "default" | "custom";
 type OrbitControlsHandle = ComponentRef<typeof OrbitControls>;
 
-const FORCE_MULTIPLIER = 0.04;
-const AIM_RESPONSE = 6.4;
-const AIM_FINE_RESPONSE = 3.8;
-const AIM_RELEASE_RESPONSE = 6.2;
-const AIM_MAX_SPEED = 1.28;
-const AIM_FINE_MULTIPLIER = 0.07;
-const AIM_HUD_UPDATE_INTERVAL = 0.08;
-const POWER_STEP = 5;
-const POWER_FINE_STEP = 1;
-const POCKET_TRANSITION_MS = 560;
-const PHYSICS_FIXED_STEP_SECONDS = 1 / 240;
-const PHYSICS_MAX_FRAME_DELTA_SECONDS = 0.1;
-const PHYSICS_MAX_TICKS_PER_FRAME = 24;
-const CUE_RESPAWN_CLEARANCE = BALL_RADIUS * 2.45;
+const FORCE_MULTIPLIER = 0.04; // Multiplicador para converter força em velocidade física
+const AIM_RESPONSE = 6.4; // Sensibilidade de rotação da mira padrão
+const AIM_FINE_RESPONSE = 3.8; // Sensibilidade de rotação da mira precisa
+const AIM_RELEASE_RESPONSE = 6.2; // Suavização de parada da mira ao soltar os botões
+const AIM_MAX_SPEED = 1.28; // Velocidade máxima da mira
+const AIM_FINE_MULTIPLIER = 0.07; // Multiplicador de precisão da mira
+const AIM_HUD_UPDATE_INTERVAL = 0.08; // Intervalo de atualização do HUD de mira
+const POWER_STEP = 5; // Passo padrão de ajuste de força
+const POWER_FINE_STEP = 1; // Passo preciso de ajuste de força
+const POCKET_TRANSITION_MS = 560; // Tempo de transição visual das caçapas
+const PHYSICS_FIXED_STEP_SECONDS = 1 / 240; // Intervalo fixo da simulação física (240hz)
+const PHYSICS_MAX_FRAME_DELTA_SECONDS = 0.1; // Delta máximo de física por frame para evitar travamento
+const PHYSICS_MAX_TICKS_PER_FRAME = 24; // Máximo de passos físicos calculados em um único frame
+const CUE_RESPAWN_CLEARANCE = BALL_RADIUS * 2.45; // Distância mínima de segurança para reposicionar a bola branca
 
 type AimInputState = {
   left: boolean;
@@ -53,10 +53,12 @@ type AimInputState = {
   fine: boolean;
 };
 
+// Limita o valor de força entre 0% e 100%
 function clampPower(value: number): number {
   return Math.min(100, Math.max(0, value));
 }
 
+// Verifica se a área no entorno da posição candidata de retorno está desimpedida de outras bolas
 function isCueRespawnPositionFree(
   position: CueBallPosition,
   balls: Ball[],
@@ -76,6 +78,7 @@ function isCueRespawnPositionFree(
   });
 }
 
+// Busca uma coordenada desocupada na mesa para o retorno da bola branca após cair na caçapa
 function findCueRespawnPosition(balls: Ball[], cueBallId: number): CueBallPosition {
   if (isCueRespawnPositionFree(CUE_BALL_START, balls, cueBallId)) {
     return CUE_BALL_START;
@@ -98,6 +101,7 @@ function findCueRespawnPosition(balls: Ball[], cueBallId: number): CueBallPositi
   return { x: -TABLE_RADIUS * 0.38, y: 0 };
 }
 
+// Executa passos da simulação física em sincronia com o loop de frames do React Three Fiber
 function SimulationLoop({
   ballsRef,
   pocketsRef,
@@ -153,6 +157,7 @@ type SmoothAimControllerProps = {
   setAimAngle: Dispatch<SetStateAction<number>>;
 };
 
+// Controla a rotação suave e amortecida do ângulo de mira com base nas teclas pressionadas
 function SmoothAimController({
   isAiming,
   isCueAnimating,
@@ -215,6 +220,7 @@ type CameraRigProps = {
   controlsRef: MutableRefObject<OrbitControlsHandle | null>;
 };
 
+// Atualiza a posição e o ponto de foco da câmera acompanhando a mira de forma suave
 function CameraRig({
   ballsRef,
   aimAngleRef,
@@ -270,11 +276,13 @@ function CameraRig({
   return null;
 }
 
+// Verifica se o foco do teclado está em um campo de texto ou botão para evitar acionar atalhos de mira/tacada
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target.tagName);
 }
 
+// Componente raiz do ambiente de testes e simulação física autônoma do jogo
 export function App() {
   const ballsRef = useRef<Ball[]>(initBalls());
   const pocketsRef = useRef<Pocket[]>([]);
@@ -295,6 +303,7 @@ export function App() {
   const [shotId, setShotId] = useState(0);
   const [auditLogs, setAuditLogs] = useState<AuditState[]>([]);
 
+  // Instancia as caçapas visuais adicionando IDs únicos e definindo seu estado de animação
   const createRenderedPockets = useCallback(
     (nextPockets: Pocket[], state: RenderedPocket["state"]): RenderedPocket[] =>
       nextPockets.map((pocket) => ({
@@ -305,6 +314,7 @@ export function App() {
     []
   );
 
+  // Gerencia a transição com animação de escala de entrada/saída ao atualizar as caçapas ativas na mesa
   const transitionToPockets = useCallback(
     (nextPockets: Pocket[], includeExitAnimation = true) => {
       pocketsRef.current = nextPockets;
@@ -347,6 +357,7 @@ export function App() {
     };
   }, [transitionToPockets]);
 
+  // Prepara e dispara o início visual da tacada (iniciando animação do taco)
   const handleShoot = useCallback(() => {
     if (!isAiming || isCueAnimating || power <= 0) return;
     const cueBall = ballsRef.current.find((b) => b.isWhite && !b.sunk);
@@ -446,6 +457,7 @@ export function App() {
     };
   }, [cameraMode, handleShoot, isAiming, isCueAnimating]);
 
+  // Aplica a força física e ângulo do taco na bola branca ao ocorrer o impacto
   const handleCueContact = useCallback(() => {
     const cueBall = ballsRef.current.find((b) => b.isWhite && !b.sunk);
     if (!cueBall) {
@@ -464,6 +476,7 @@ export function App() {
     setIsAiming(false);
   }, [power]);
 
+  // Trata a finalização do movimento de todas as bolas, gerando novas caçapas e a auditoria SHA-256
   const handleSimulationStopped = useCallback(async () => {
     const cueBall = ballsRef.current.find((b) => b.isWhite);
     if (cueBall && cueBall.sunk) {
@@ -493,6 +506,7 @@ export function App() {
     setAuditLogs((prev) => [audit, ...prev.slice(0, 9)]);
   }, [transitionToPockets]);
 
+  // Reinicia completamente o tabuleiro e as configurações da partida
   const handleReset = () => {
     ballsRef.current = initBalls();
     const nextPockets = createRandomPockets(ballsRef.current);

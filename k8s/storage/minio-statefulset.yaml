@@ -46,7 +46,7 @@ spec:
       serviceAccountName: snooker-data
       containers:
         - name: minio
-          image: minio/minio:latest
+          image: minio/minio:RELEASE.2024-06-06T09-36-42Z
           imagePullPolicy: IfNotPresent
           args:
             - server

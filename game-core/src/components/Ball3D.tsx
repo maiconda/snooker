@@ -11,16 +11,18 @@ type Ball3DProps = {
 const TOKEN_HEIGHT = 0.018;
 const BALL_RADIUS = 0.035;
 
-// Shared static geometries instantiated once to save memory and CPU overhead
+// Criação estática das geometrias para otimizar o uso de memória na GPU
 const cylinderGeom = new CylinderGeometry(BALL_RADIUS, BALL_RADIUS, TOKEN_HEIGHT, 32);
 const boxGeom = new BoxGeometry(BALL_RADIUS * 1.08, 0.0001, 0.004);
 const ringGeom1 = new RingGeometry(BALL_RADIUS * 0.72, BALL_RADIUS * 0.78, 32);
 const ringGeom2 = new RingGeometry(BALL_RADIUS * 0.96, BALL_RADIUS, 32);
 
+// Interpolação suave para transições
 function smoothStep(value: number): number {
   return value * value * (3 - 2 * value);
 }
 
+// Componente que renderiza a bola no espaço 3D com rotações e animação de caçapa
 export function Ball3D({ ball }: Ball3DProps) {
   const groupRef = useRef<Group>(null);
 

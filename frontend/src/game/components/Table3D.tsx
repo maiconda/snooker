@@ -7,7 +7,7 @@ import {
   BALL_RADIUS
 } from "../physics/engine";
 import type { Ball, Pocket } from "../physics/engine";
-import type { MutableRefObject } from "react";
+import type { RefObject } from "react";
 import type { Group, Mesh, MeshStandardMaterial } from "three";
 import { CircleGeometry, RingGeometry, InstancedMesh, Object3D } from "three";
 
@@ -20,7 +20,7 @@ type Table3DProps = {
   balls: Ball[];
   pockets: RenderedPocket[];
   cueBall: { x: number; y: number } | null;
-  aimAngleRef: MutableRefObject<number>;
+  aimAngleRef: RefObject<number>;
   aiming: boolean;
   power: number;
   shotId: number;
@@ -31,7 +31,7 @@ type Table3DProps = {
 
 type MinimalCueProps = {
   cueBall: { x: number; y: number };
-  aimAngleRef: MutableRefObject<number>;
+  aimAngleRef: RefObject<number>;
   aiming: boolean;
   power: number;
   shotId: number;
@@ -79,6 +79,7 @@ type AimHit = {
   secondaryAngle: number;
 };
 
+// Calcula uma interpolação Hermite suave para transições visuais
 function smoothStep(value: number): number {
   return value * value * (3 - 2 * value);
 }
@@ -94,6 +95,7 @@ const wallSegments = Array.from({ length: TABLE_WALL_SEGMENTS }, (_, index) => {
   };
 });
 
+// Calcula a distância da bola branca até a borda da mesa circular
 function getTableEdgeDistance(
   cueBall: { x: number; y: number },
   directionX: number,
@@ -102,6 +104,7 @@ function getTableEdgeDistance(
   const playableRadius = TABLE_RADIUS - BALL_RADIUS;
   const projectedCenter = cueBall.x * directionX + cueBall.y * directionY;
   const distanceFromCenterSq = cueBall.x * cueBall.x + cueBall.y * cueBall.y;
+  
   const discriminant =
     projectedCenter * projectedCenter - distanceFromCenterSq + playableRadius * playableRadius;
 
@@ -110,6 +113,7 @@ function getTableEdgeDistance(
   return Math.max(0, -projectedCenter + Math.sqrt(discriminant));
 }
 
+// Encontra a primeira bola atingida pela linha de mira
 function getFirstBallAimHit(
   cueBall: { x: number; y: number },
   balls: Ball[],
@@ -124,14 +128,17 @@ function getFirstBallAimHit(
 
     const relativeX = ball.x - cueBall.x;
     const relativeY = ball.y - cueBall.y;
+    
     const projection = relativeX * directionX + relativeY * directionY;
     if (projection <= AIM_ROUTE_START) continue;
 
     const closestDistanceSq =
       relativeX * relativeX + relativeY * relativeY - projection * projection;
+    
     const physicalContactRadius = BALL_RADIUS + ball.radius;
     const predictionRadius = physicalContactRadius + AIM_PREDICTION_BUFFER;
     const predictionRadiusSq = predictionRadius * predictionRadius;
+    
     if (closestDistanceSq > predictionRadiusSq) continue;
 
     const contactDistance = projection - Math.sqrt(predictionRadiusSq - closestDistanceSq);
@@ -142,6 +149,7 @@ function getFirstBallAimHit(
       closestDistanceSq < visualRadiusSq
         ? projection - Math.sqrt(visualRadiusSq - closestDistanceSq) - AIM_VISUAL_STOP_GAP
         : contactDistance + BALL_RADIUS * 0.72;
+        
     const physicalContactDistance =
       closestDistanceSq <= physicalContactRadius * physicalContactRadius
         ? projection -
@@ -149,6 +157,7 @@ function getFirstBallAimHit(
         : contactDistance;
     const cueContactX = cueBall.x + directionX * physicalContactDistance;
     const cueContactY = cueBall.y + directionY * physicalContactDistance;
+    
     const normalX = ball.x - cueContactX;
     const normalY = ball.y - cueContactY;
     const normalLength = Math.max(0.0001, Math.sqrt(normalX * normalX + normalY * normalY));
@@ -158,6 +167,7 @@ function getFirstBallAimHit(
       nearestHit = {
         ball,
         lineEndDistance: Math.max(0, lineEndDistance),
+        // Rota de saída baseada na normal do ponto de impacto
         secondaryAngle: Math.atan2(normalY / normalLength, normalX / normalLength)
       };
     }
@@ -166,10 +176,11 @@ function getFirstBallAimHit(
   return nearestHit;
 }
 
-// Shared pocket geometries instantiated once to save memory and CPU overhead
+// Criação estática das geometrias das caçapas para otimizar o uso da GPU
 const pocketCircleGeom = new CircleGeometry(POCKET_RADIUS, 32);
 const pocketRingGeom = new RingGeometry(POCKET_RADIUS * 1.12, POCKET_RADIUS * 1.28, 32);
 
+// Componente que renderiza a caçapa no espaço 3D com animação de escala
 function PocketVisual({ pocket }: { pocket: RenderedPocket }) {
   const groupRef = useRef<Group>(null);
   const scaleRef = useRef(pocket.state === "entering" ? 0.001 : 1);
@@ -201,12 +212,14 @@ function PocketVisual({ pocket }: { pocket: RenderedPocket }) {
   );
 }
 
+// Calcula o recuo do taco com base na força selecionada
 function getCueDistanceForPower(
   power: number
 ): number {
   return REST_TIP_DISTANCE + (power / 100) * MAX_PULLBACK;
 }
 
+// Controla e renderiza o taco em 3D
 function MinimalCue({
   cueBall,
   aimAngleRef,
@@ -232,10 +245,12 @@ function MinimalCue({
   const lockedPoseRef = useRef({ x: cueBall.x, y: cueBall.y, angle: 0 });
   const visualPoseRef = useRef({ x: cueBall.x, y: cueBall.y, angle: aimAngleRef.current });
 
+  // Ajusta a distância visual da ponta do taco em relação à bola branca no eixo Z
   const setCueTipDistance = useCallback((tipDistance: number) => {
     cueDistanceRef.current = tipDistance;
 
     if (cueRef.current) {
+      // Recuo e avanço do taco no eixo Z
       cueRef.current.position.z = tipDistance + CUE_LENGTH / 2;
     }
   }, []);
@@ -287,8 +302,6 @@ function MinimalCue({
         const lerpFactor = 1 - Math.exp(-REMOTE_CUE_POSE_RESPONSE * cappedDelta);
         visualPoseRef.current.x += (targetPose.x - visualPoseRef.current.x) * lerpFactor;
         visualPoseRef.current.y += (targetPose.y - visualPoseRef.current.y) * lerpFactor;
-
-        // The angle is already interpolated in Table3D and passed via visualAimAngleRef
         visualPoseRef.current.angle = targetPose.angle;
       } else {
         visualPoseRef.current.x = targetPose.x;
@@ -296,6 +309,7 @@ function MinimalCue({
         visualPoseRef.current.angle = targetPose.angle;
       }
 
+      // Atualiza posição e rotação do taco
       groupRef.current.position.set(visualPoseRef.current.x, CUE_CENTER_Y, visualPoseRef.current.y);
       groupRef.current.rotation.set(0, -visualPoseRef.current.angle - Math.PI / 2, 0);
       groupRef.current.visible =
@@ -311,6 +325,7 @@ function MinimalCue({
       cueMaterialRef.current.opacity = 1;
     }
 
+    // Simula o movimento do taco usando física de mola (amortecimento e rigidez) para suavidade
     const springTo = (target: number, stiffness: number, damping: number) => {
       const displacement = target - cueDistanceRef.current;
       const acceleration = displacement * stiffness - cueVelocityRef.current * damping;
@@ -371,11 +386,12 @@ function MinimalCue({
       return;
     }
 
+    // Animação de impacto do taco na bola branca
     if (phase === "striking") {
       strikeElapsedRef.current += cappedDelta;
       const duration = 0.18 - (0.18 - 0.06) * (power / 100);
       const progress = Math.min(1, strikeElapsedRef.current / duration);
-      const t = progress * progress; // quadratic ease-in for natural acceleration
+      const t = progress * progress;
       const currentDistance =
         strikeStartDistanceRef.current + (CONTACT_TIP_DISTANCE - strikeStartDistanceRef.current) * t;
 
@@ -390,7 +406,7 @@ function MinimalCue({
         };
         phaseRef.current = "followThrough";
         setCueTipDistance(CONTACT_TIP_DISTANCE);
-        onCueContactRef.current();
+        onCueContactRef.current(); // Dispara o impacto físico
       }
     }
   });
@@ -401,6 +417,7 @@ function MinimalCue({
       position={[cueBall.x, CUE_CENTER_Y, cueBall.y]}
       rotation={[0, -Math.PI / 2, 0]}
     >
+      {/* Inclinação do taco para simular a postura real */}
       <RoundedBox
         ref={cueRef}
         position={[0, 0, REST_TIP_DISTANCE + CUE_LENGTH / 2]}
@@ -421,6 +438,7 @@ function MinimalCue({
   );
 }
 
+// Componente principal que renderiza a mesa de sinuca circular, caçapas e guias de mira
 export function Table3D({
   balls,
   pockets,
@@ -443,6 +461,7 @@ export function Table3D({
   const visualAimAngleRef = useRef(aimAngleRef.current);
   const visualPowerRef = useRef(power);
 
+  // Renderização otimizada das bordas da mesa em um único Draw Call
   useEffect(() => {
     if (!wallRef.current) return;
 
@@ -453,6 +472,7 @@ export function Table3D({
       tempObject.updateMatrix();
       wallRef.current!.setMatrixAt(index, tempObject.matrix);
     });
+    
     wallRef.current.instanceMatrix.needsUpdate = true;
     wallRef.current.computeBoundingBox();
     wallRef.current.computeBoundingSphere();

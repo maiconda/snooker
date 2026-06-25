@@ -60,6 +60,7 @@ Aplicar em ordem:
 ```bash
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/serviceaccounts.yaml
+kubectl apply -f k8s/headlamp.yaml
 kubectl apply -f k8s/configmap.yaml
 kubectl apply -f k8s/secret.yaml
 kubectl apply -f k8s/storage/
@@ -123,6 +124,18 @@ Depois acesse:
 ```txt
 http://snooker.local
 ```
+
+### Token do Headlamp
+
+Para acessar o painel do Headlamp e visualizar o estado do cluster, utilize o token do administrador criado pelo manifesto `k8s/headlamp.yaml`. 
+
+Obtenha o token executando o comando abaixo no terminal do servidor:
+
+```bash
+kubectl -n snooker get secret headlamp-admin-token -o jsonpath='{.data.token}' | base64 --decode
+```
+
+Copie o token gerado e cole-o na tela de login do Headlamp.
 
 ## Observacoes
 

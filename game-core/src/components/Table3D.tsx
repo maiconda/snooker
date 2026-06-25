@@ -75,6 +75,7 @@ type AimHit = {
   secondaryAngle: number;
 };
 
+// Calcula uma interpolação Hermite suave para transições visuais
 function smoothStep(value: number): number {
   return value * value * (3 - 2 * value);
 }
@@ -90,6 +91,7 @@ const wallSegments = Array.from({ length: TABLE_WALL_SEGMENTS }, (_, index) => {
   };
 });
 
+// Calcula a distância da bola branca até a borda da mesa circular
 function getTableEdgeDistance(
   cueBall: { x: number; y: number },
   directionX: number,
@@ -106,6 +108,7 @@ function getTableEdgeDistance(
   return Math.max(0, -projectedCenter + Math.sqrt(discriminant));
 }
 
+// Encontra a primeira bola alvo atingida pela linha de mira
 function getFirstBallAimHit(
   cueBall: { x: number; y: number },
   balls: Ball[],
@@ -162,10 +165,11 @@ function getFirstBallAimHit(
   return nearestHit;
 }
 
-// Shared pocket geometries instantiated once to save memory and CPU overhead
+// Criação estática das geometrias das caçapas para otimizar o uso da GPU
 const pocketCircleGeom = new CircleGeometry(POCKET_RADIUS, 32);
 const pocketRingGeom = new RingGeometry(POCKET_RADIUS * 1.12, POCKET_RADIUS * 1.28, 32);
 
+// Componente que renderiza a representação visual 3D de uma caçapa
 function PocketVisual({ pocket }: { pocket: RenderedPocket }) {
   const groupRef = useRef<Group>(null);
   const scaleRef = useRef(pocket.state === "entering" ? 0.001 : 1);
@@ -198,12 +202,14 @@ function PocketVisual({ pocket }: { pocket: RenderedPocket }) {
   );
 }
 
+// Calcula o recuo do taco em relação à bola com base na força selecionada
 function getCueDistanceForPower(
   power: number
 ): number {
   return REST_TIP_DISTANCE + (power / 100) * MAX_PULLBACK;
 }
 
+// Componente que renderiza e controla a animação do taco de sinuca
 function MinimalCue({
   cueBall,
   aimAngleRef,
@@ -227,6 +233,7 @@ function MinimalCue({
   const strikeElapsedRef = useRef(0);
   const lockedPoseRef = useRef({ x: cueBall.x, y: cueBall.y, angle: 0 });
 
+  // Ajusta a distância visual da ponta do taco em relação à bola branca no eixo Z
   const setCueTipDistance = useCallback((tipDistance: number) => {
     cueDistanceRef.current = tipDistance;
 
@@ -292,6 +299,7 @@ function MinimalCue({
       cueMaterialRef.current.opacity = 1;
     }
 
+    // Simula o movimento do taco usando física de mola (amortecimento e rigidez) para suavidade
     const springTo = (target: number, stiffness: number, damping: number) => {
       const displacement = target - cueDistanceRef.current;
       const acceleration = displacement * stiffness - cueVelocityRef.current * damping;
@@ -356,7 +364,7 @@ function MinimalCue({
       strikeElapsedRef.current += cappedDelta;
       const duration = 0.18 - (0.18 - 0.06) * (power / 100);
       const progress = Math.min(1, strikeElapsedRef.current / duration);
-      const t = progress * progress; // quadratic ease-in for natural acceleration
+      const t = progress * progress; // Aceleração suave da tacada (ease-in)
       const currentDistance =
         strikeStartDistanceRef.current + (CONTACT_TIP_DISTANCE - strikeStartDistanceRef.current) * t;
 
@@ -402,6 +410,7 @@ function MinimalCue({
   );
 }
 
+// Componente que renderiza o tampo da mesa de sinuca, bordas instanciadas e guias de mira
 export function Table3D({
   balls,
   pockets,
