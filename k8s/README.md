@@ -135,7 +135,7 @@ Para instalar o Headlamp no seu cluster no namespace `snooker` usando Helm:
 curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
 # 2. Adicionar o repositório do Headlamp e atualizar
-helm repo add headlamp https://headlamp-k8s.github.io/headlamp/
+helm repo add headlamp https://kubernetes-sigs.github.io/headlamp/
 helm repo update
 
 # 3. Instalar o Headlamp no namespace 'snooker'
