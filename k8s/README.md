@@ -32,8 +32,8 @@ As imagens da aplicacao estao versionadas. Antes de usar isso em producao real, 
 1. K3s instalado no notebook Debian.
 2. StorageClass `local-path` disponivel.
 3. Traefik habilitado no K3s.
-4. O host `snooker.local` apontando para o IP Tailscale do servidor.
-5. Headlamp instalado separadamente para visualizacao do cluster.
+4. Domínio público `snooker.maiconda.com` configurado no Cloudflare Tunnel apontando para o servidor.
+5. Headlamp instalado no cluster (namespace `snooker`).
 
 Validacao rapida:
 
@@ -53,9 +53,21 @@ cp k8s/examples/secret.example.yaml k8s/secret.yaml
 
 Depois ajuste os valores em `stringData`.
 
+## Compilação e Carregamento de Imagens
+
+Se você está rodando localmente no servidor Debian com o K3s, pode compilar e carregar as imagens diretamente no containerd do K3s (sem precisar de um registry público ou privado) executando o script utilitário:
+
+```bash
+# 1. Dar permissão de execução
+chmod +x k8s/build-and-import.sh
+
+# 2. Executar o script de compilação e importação
+./k8s/build-and-import.sh
+```
+
 ## Aplicacao
 
-Aplicar em ordem:
+Depois de carregar as imagens e configurar suas secrets, aplique os manifestos na ordem abaixo:
 
 ```bash
 kubectl apply -f k8s/namespace.yaml
@@ -104,32 +116,39 @@ kubectl -n snooker describe networkpolicy default-deny-all
 kubectl -n snooker describe job profile-db-init
 ```
 
-## Acesso
+## Acesso via Cloudflare Tunnel
 
-No computador cliente, aponte `snooker.local` para o IP Tailscale do notebook servidor. No Windows, edite como administrador:
+Configure o seu túnel Cloudflare para apontar `snooker.maiconda.com` e `headlamp.maiconda.com` para a porta 80 do seu servidor.
 
-```txt
-C:\Windows\System32\drivers\etc\hosts
-```
-
-Exemplo:
+Depois acesse a aplicação em:
 
 ```txt
-100.x.y.z snooker.local
-100.x.y.z headlamp.snooker.local
+https://snooker.maiconda.com
 ```
 
-Depois acesse:
+### Acesso ao Headlamp (Online no Cluster)
+
+Para instalar o Headlamp no seu cluster no namespace `snooker` usando Helm:
+
+```bash
+# 1. Instalar o cliente do Helm (se não tiver instalado no Debian)
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# 2. Adicionar o repositório do Headlamp e atualizar
+helm repo add headlamp https://headlamp-k8s.github.io/headlamp/
+helm repo update
+
+# 3. Instalar o Headlamp no namespace 'snooker'
+helm install headlamp headlamp/headlamp --namespace snooker
+```
+
+Uma vez instalado o Headlamp e configurado no Cloudflare Tunnel, acesse:
 
 ```txt
-http://snooker.local
+https://headlamp.maiconda.com
 ```
 
-### Token do Headlamp
-
-Para acessar o painel do Headlamp e visualizar o estado do cluster, utilize o token do administrador criado pelo manifesto `k8s/headlamp.yaml`. 
-
-Obtenha o token executando o comando abaixo no terminal do servidor:
+Para fazer o login, utilize o token do administrador criado pelo manifesto `k8s/headlamp.yaml`. Obtenha o token executando o comando abaixo no terminal do servidor:
 
 ```bash
 kubectl -n snooker get secret headlamp-admin-token -o jsonpath='{.data.token}' | base64 --decode

@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/name: snooker-config
     app.kubernetes.io/part-of: snooker
 data:
-  PUBLIC_ORIGIN: "http://snooker.local"
+  PUBLIC_ORIGIN: "https://snooker.maiconda.com"
   AUTH_ALLOWED_ORIGINS: "http://snooker.local,http://localhost:3000,http://snooker.maiconda.com,https://snooker.maiconda.com,http://snooker.maiconda.com:3000,https://snooker.maiconda.com:3000"
   PROFILE_ALLOWED_ORIGINS: "http://snooker.local,http://localhost:3000,http://snooker.maiconda.com,https://snooker.maiconda.com,http://snooker.maiconda.com:3000,https://snooker.maiconda.com:3000"
   GAME_ALLOWED_ORIGINS: "http://snooker.local,http://localhost:3000,http://snooker.maiconda.com,https://snooker.maiconda.com,http://snooker.maiconda.com:3000,https://snooker.maiconda.com:3000"
@@ -29,11 +29,11 @@ data:
   AUTH_INTERNAL_URL: "http://auth:8080"
   PROFILE_INTERNAL_URL: "http://profile:8080"
   STORAGE_ENDPOINT: "minio:9000"
-  STORAGE_PUBLIC_BASE_URL: "http://snooker.local/snooker-profiles"
+  STORAGE_PUBLIC_BASE_URL: "https://snooker.maiconda.com/snooker-profiles"
   STORAGE_BUCKET_NAME: "snooker-profiles"
   STORAGE_REGION: "us-east-1"
   STORAGE_USE_SSL: "false"
   PROFILE_MAX_PHOTO_BYTES: "2097152"
   NATS_URL: "nats://nats:4222"
   GAME_OWNER_DISCONNECT_TIMEOUT_SECONDS: "10"
-  MINIO_API_CORS_ALLOW_ORIGIN: "http://snooker.local"
+  MINIO_API_CORS_ALLOW_ORIGIN: "https://snooker.maiconda.com"
