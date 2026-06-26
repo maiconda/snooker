@@ -1,3 +1,4 @@
+# ServiceAccount para acesso administrativo do Headlamp
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -7,6 +8,9 @@ metadata:
     app.kubernetes.io/name: headlamp-admin
     app.kubernetes.io/part-of: snooker
 ---
+# Criamos um Secret do tipo 'service-account-token' para gerar um token estático.
+# Desde a v1.24 do Kubernetes, tokens de ServiceAccount não são criados sozinhos,
+# por isso este manifesto é essencial para obtermos o token e logarmos no Headlamp.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -19,6 +23,8 @@ metadata:
     app.kubernetes.io/part-of: snooker
 type: kubernetes.io/service-account-token
 ---
+# O ClusterRoleBinding associa a ServiceAccount ao papel global de 'cluster-admin',
+# permitindo que o painel do Headlamp tenha visibilidade e permissões totais no cluster.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -35,6 +41,8 @@ roleRef:
   name: cluster-admin
   apiGroup: rbac.authorization.k8s.io
 ---
+# Ingress específico para o Headlamp, encaminhando o tráfego do subdomínio público
+# para o serviço do Headlamp (porta 80) no cluster.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -59,6 +67,10 @@ spec:
                 port:
                   number: 80
 ---
+# Política de Rede para o Headlamp.
+# Como o baseline do namespace é default-deny-all (bloqueia tudo), precisamos liberar:
+# 1. Entrada (Ingress) apenas do Traefik (que roda no namespace kube-system) na porta interna 4466.
+# 2. Saída (Egress) livre (- {}) para o Headlamp falar com a API do Kubernetes (apiserver) e CoreDNS.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

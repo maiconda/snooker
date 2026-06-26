@@ -100,6 +100,8 @@ spec:
                 configMapKeyRef:
                   name: snooker-config
                   key: DB_SSLMODE
+            # Esta variável diz ao serviço de Jogo onde encontrar
+            # o NATS (servidor de mensageria) dentro da rede interna do Kubernetes.
             - name: NATS_URL
               valueFrom:
                 configMapKeyRef:
@@ -110,6 +112,8 @@ spec:
                 configMapKeyRef:
                   name: snooker-config
                   key: GAME_OWNER_DISCONNECT_TIMEOUT_SECONDS
+            # URL interna para o microsserviço de perfil.
+            # Quando um jogador entra numa sala, o game chama essa rota interna para puxar a foto e o apelido.
             - name: PROFILE_INTERNAL_URL
               valueFrom:
                 configMapKeyRef:

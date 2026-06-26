@@ -1,3 +1,5 @@
+# O ConfigMap centraliza as variáveis de ambiente que não são confidenciais.
+# Ele facilita alterar parâmetros (como URLs de CORS ou hosts) sem recompilar a aplicação.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,11 +9,18 @@ metadata:
     app.kubernetes.io/name: snooker-config
     app.kubernetes.io/part-of: snooker
 data:
+  # Origem pública da aplicação usada pelo cliente
   PUBLIC_ORIGIN: "https://snooker.maiconda.com"
+
+  # Origens permitidas de CORS para os microsserviços. Permite localhost para dev local e maiconda.com para prod.
   AUTH_ALLOWED_ORIGINS: "http://snooker.local,http://localhost:3000,http://snooker.maiconda.com,https://snooker.maiconda.com,http://snooker.maiconda.com:3000,https://snooker.maiconda.com:3000"
   PROFILE_ALLOWED_ORIGINS: "http://snooker.local,http://localhost:3000,http://snooker.maiconda.com,https://snooker.maiconda.com,http://snooker.maiconda.com:3000,https://snooker.maiconda.com:3000"
   GAME_ALLOWED_ORIGINS: "http://snooker.local,http://localhost:3000,http://snooker.maiconda.com,https://snooker.maiconda.com,http://snooker.maiconda.com:3000,https://snooker.maiconda.com:3000"
+  
+  # Desabilitado para o ambiente local em HTTP (usar true quando subir HTTPS com certificado real)
   AUTH_COOKIE_SECURE: "false"
+
+  # Endereços e portas internas dos bancos PostgreSQL. Apontam para os nomes dos Services do Kubernetes.
   AUTH_DB_HOST: "auth-postgres"
   AUTH_DB_PORT: "5432"
   AUTH_DB_USER: "postgres"
@@ -26,14 +35,20 @@ data:
   GAME_DB_USER: "postgres"
   GAME_DB_NAME: "snooker_game"
   DB_SSLMODE: "disable"
+
+  # URLs de comunicação síncrona interna de APIs
   AUTH_INTERNAL_URL: "http://auth:8080"
   PROFILE_INTERNAL_URL: "http://profile:8080"
+
+  # Configuração de Object Storage (MinIO)
   STORAGE_ENDPOINT: "minio:9000"
   STORAGE_PUBLIC_BASE_URL: "https://snooker.maiconda.com/snooker-profiles"
   STORAGE_BUCKET_NAME: "snooker-profiles"
   STORAGE_REGION: "us-east-1"
   STORAGE_USE_SSL: "false"
   PROFILE_MAX_PHOTO_BYTES: "2097152"
+
+  # URL de conexão com o broker de mensagens NATS
   NATS_URL: "nats://nats:4222"
   GAME_OWNER_DISCONNECT_TIMEOUT_SECONDS: "10"
   MINIO_API_CORS_ALLOW_ORIGIN: "https://snooker.maiconda.com"

@@ -1,3 +1,4 @@
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -8,14 +9,15 @@ metadata:
     app.kubernetes.io/component: messaging
     app.kubernetes.io/part-of: snooker
 spec:
-  type: ClusterIP
+  type: ClusterIP # Tipo padrão: o serviço só é visível de dentro do cluster.
   selector:
-    app.kubernetes.io/name: nats
+    app.kubernetes.io/name: nats # Redireciona o tráfego para os pods com este label.
   ports:
     - name: client
       port: 4222
       targetPort: client
 ---
+# DEPLOYMENT: Gerencia o ciclo de vida dos pods do NATS.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,10 +28,10 @@ metadata:
     app.kubernetes.io/component: messaging
     app.kubernetes.io/part-of: snooker
 spec:
-  replicas: 1
-  revisionHistoryLimit: 3
+  replicas: 1 # Como é um ambiente de homelab/desenvolvimento, 1 réplica é suficiente.
+  revisionHistoryLimit: 3 # Guarda os 3 últimos deploys para rollback rápido se necessário.
   strategy:
-    type: RollingUpdate
+    type: RollingUpdate # Atualiza o pod sem downtime (cria o novo antes de matar o antigo).
   selector:
     matchLabels:
       app.kubernetes.io/name: nats
@@ -40,29 +42,34 @@ spec:
         app.kubernetes.io/component: messaging
         app.kubernetes.io/part-of: snooker
     spec:
-      serviceAccountName: snooker-app
+      serviceAccountName: snooker-app # Usa a ServiceAccount que criamos, sem tokens automáticos da API do K8s.
       containers:
         - name: nats
-          image: nats:2.10.16-alpine
+          image: nats:2.10.16-alpine # Versão estável do NATS rodando em Alpine Linux (imagem muito leve).
           imagePullPolicy: IfNotPresent
           args:
-            - -js
+            - -js # IMPORTANTE: Habilita o JetStream do NATS, necessário para persistência de mensagens e filas de mensagens.
           ports:
             - name: client
               containerPort: 4222
           resources:
+            # Requests: o mínimo que o K8s garante para o container iniciar.
             requests:
-              cpu: 50m
+              cpu: 50m # 0.05 de um núcleo de CPU.
               memory: 64Mi
+            # Limits: o máximo de recursos que o container pode consumir (evita que ele derrube o nó se travar).
             limits:
               cpu: 300m
               memory: 256Mi
+          # As Probes monitoram a saúde da aplicação para o Kubernetes saber o que fazer.
           readinessProbe:
+            # Verifica se a porta TCP 4222 está aceitando conexões antes de mandar tráfego de outros pods.
             tcpSocket:
               port: client
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
+            # Se falhar repetidamente, o Kubelet reinicia o pod automaticamente.
             tcpSocket:
               port: client
             initialDelaySeconds: 15

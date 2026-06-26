@@ -1,3 +1,6 @@
+# O Ingress funciona como o nosso "Roteador Externo" ou "API Gateway".
+# Ele recebe as requisições HTTP de fora do cluster e redireciona para os Services internos corretos
+# baseando-se no host (snooker.maiconda.com) e no caminho (/api/v1/..., /snooker-profiles, /).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -9,13 +12,19 @@ metadata:
     app.kubernetes.io/part-of: snooker
   annotations:
     snooker.maiconda.com/extra-points: "4.3 Ingress Controller HTTP routing."
+    # Define que as regras usam o entrypoint 'web' (HTTP porta 80) configurado no Traefik.
     traefik.ingress.kubernetes.io/router.entrypoints: web
 spec:
+  # Indica que o Traefik (que já vem integrado por padrão no K3s) é o controlador responsável por processar essa regra.
   ingressClassName: traefik
   rules:
     - host: snooker.maiconda.com
       http:
         paths:
+          # As rotas mais específicas devem vir primeiro,
+          # e a rota mais genérica ("/") deve ser a última, agindo como fallback (padrão).
+
+          # 1. Rotas de salas e notificações em tempo real - Microsserviço de Jogo
           - path: /api/v1/rooms
             pathType: Prefix
             backend:
@@ -30,6 +39,8 @@ spec:
                 name: game
                 port:
                   number: 8080
+
+          # 2. Rota de gerenciamento de perfis - Microsserviço de Perfil
           - path: /api/v1/profiles
             pathType: Prefix
             backend:
@@ -37,6 +48,8 @@ spec:
                 name: profile
                 port:
                   number: 8080
+
+          # 3. Rota de autenticação e sessão - Microsserviço de Autenticação
           - path: /api
             pathType: Prefix
             backend:
@@ -44,6 +57,8 @@ spec:
                 name: auth
                 port:
                   number: 8080
+
+          # 4. Rota para carregar arquivos de imagem - MinIO (Object Storage)
           - path: /snooker-profiles
             pathType: Prefix
             backend:
@@ -51,6 +66,8 @@ spec:
                 name: minio
                 port:
                   number: 9000
+
+          # 5. Rota padrão: redireciona todo o resto (o site em si) - Frontend
           - path: /
             pathType: Prefix
             backend:

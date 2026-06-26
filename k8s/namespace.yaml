@@ -1,3 +1,5 @@
+# O Namespace delimita logicamente o ambiente no cluster. 
+# Serve para isolar os recursos do Snooker de outros apps que possam rodar no K3s.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -7,4 +9,5 @@ metadata:
     app.kubernetes.io/name: snooker
     app.kubernetes.io/part-of: snooker
   annotations:
+    # Anotações servem para documentar metadados não-identificativos sobre o recurso
     snooker.maiconda.com/description: "Snooker Multiplayer homelab namespace."

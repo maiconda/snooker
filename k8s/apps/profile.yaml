@@ -70,6 +70,8 @@ spec:
                 secretKeyRef:
                   name: snooker-secrets
                   key: INTERNAL_API_KEY
+            # Aponta para a API interna do microsserviço de autenticação (auth)
+            # para validar permissões de sessão.
             - name: AUTH_INTERNAL_URL
               valueFrom:
                 configMapKeyRef:
@@ -105,11 +107,15 @@ spec:
                 configMapKeyRef:
                   name: snooker-config
                   key: DB_SSLMODE
+            #  Configuração para falar com o MinIO.
+            # O 'STORAGE_ENDPOINT' diz onde está o MinIO dentro do cluster (minio:9000).
             - name: STORAGE_ENDPOINT
               valueFrom:
                 configMapKeyRef:
                   name: snooker-config
                   key: STORAGE_ENDPOINT
+            # 'STORAGE_PUBLIC_BASE_URL' é a URL externa pela qual o navegador do cliente vai carregar as fotos
+            # (passando pelo Cloudflare Tunnel -> Ingress -> Service -> MinIO).
             - name: STORAGE_PUBLIC_BASE_URL
               valueFrom:
                 configMapKeyRef:

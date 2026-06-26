@@ -10,7 +10,7 @@ metadata:
 data:
   init-profile-db.sh: |
     #!/bin/sh
-    set -eu
+    set -eu # Para a execução imediatamente se qualquer comando falhar (fail-fast).
 
     DB_HOST="${PROFILE_DB_HOST:-profile-postgres}"
     DB_USER="${PROFILE_DB_USER:-postgres}"
@@ -20,6 +20,8 @@ data:
 
     export PGPASSWORD="${PGPASSWORD:-postgres}"
 
+    # DICA DE APRESENTAÇÃO: Loop de polling. Espera o PostgreSQL subir completamente e aceitar
+    # conexões antes de tentar rodar os comandos psql. Evita erros de "connection refused" na inicialização.
     until pg_isready -h "$DB_HOST" -U "$DB_USER" -d postgres; do
       sleep 1
     done
@@ -40,7 +42,9 @@ data:
       fi
     }
 
+    # Se o banco de dados de destino não existe, cria ele.
     if ! database_exists "$TARGET_DB"; then
+      # Se existir um banco legível antigo, clona as tabelas dele
       if [ "$TARGET_DB" != "$LEGACY_DB" ] && database_exists "$LEGACY_DB"; then
         createdb -h "$DB_HOST" -U "$DB_USER" -T "$LEGACY_DB" "$TARGET_DB"
         exit 0
@@ -53,6 +57,7 @@ data:
       exit 0
     fi
 
+    # Lógica de migração de registros da base legada (se houver dados antigos de perfil)
     LEGACY_PROFILE_COUNT="$(table_count "$LEGACY_DB" profiles)"
     TARGET_PROFILE_COUNT="$(table_count "$TARGET_DB" profiles)"
 
@@ -70,6 +75,7 @@ data:
         psql -v ON_ERROR_STOP=1 -h "$DB_HOST" -U "$DB_USER" -d "$TARGET_DB"
     fi
 
+    # Atualiza as URLs das fotos de avatar do usuário com o domínio correto do MinIO
     if [ -n "$PUBLIC_BASE_URL" ] && table_exists "$TARGET_DB" profiles; then
       PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
       ESCAPED_PUBLIC_BASE_URL="$(printf "%s" "$PUBLIC_BASE_URL" | sed "s/'/''/g")"

@@ -1,3 +1,5 @@
+# 1. BASELINE: Bloqueia absolutamente todo o tráfego de entrada (Ingress) e saída (Egress).
+# Isso garante que se um container for invadido, o invasor não consegue se mover pela rede.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -9,11 +11,13 @@ metadata:
   annotations:
     snooker.maiconda.com/extra-points: "4.5 Default deny NetworkPolicy baseline."
 spec:
-  podSelector: {}
+  podSelector: {} # Seleciona todos os pods do namespace.
   policyTypes:
     - Ingress
     - Egress
 ---
+# 2. DNS: Permite que os Pods façam consultas DNS (porta 53 UDP/TCP) no kube-system (CoreDNS).
+# Sem isso, os pods não conseguiriam resolver nomes de domínio interno como "nats" ou "auth-postgres".
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -23,20 +27,22 @@ metadata:
     app.kubernetes.io/name: snooker-network
     app.kubernetes.io/part-of: snooker
 spec:
-  podSelector: {}
+  podSelector: {} # Aplica para todos os pods do namespace.
   policyTypes:
     - Egress
   egress:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: kube-system # Permite falar com o namespace do sistema onde roda o CoreDNS.
       ports:
         - protocol: UDP
           port: 53
         - protocol: TCP
           port: 53
 ---
+# 3. INGRESS CONTROLLER: Permite que o Traefik (que está no namespace kube-system) envie tráfego
+# para o Frontend, Auth, Profile, Game e MinIO.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -62,7 +68,7 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: kube-system # Origem permitida: namespace do Traefik.
       ports:
         - protocol: TCP
           port: 80
@@ -71,6 +77,8 @@ spec:
         - protocol: TCP
           port: 9000
 ---
+# 4. FRONTEND EGRESS: Permite que o Frontend encaminhe requisições para as APIs internas.
+# O Frontend atua como a casca inicial, então ele precisa falar com Auth, Profile, Game e MinIO.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -102,6 +110,9 @@ spec:
         - protocol: TCP
           port: 9000
 ---
+# 5. AUTH TRAFFIC: Permite tráfego para o microsserviço de Autenticação (Auth).
+# DICA PARA A APRESENTAÇÃO: Veja que ele tem permissão de Egress para 0.0.0.0/0 (Internet)
+# na porta 443. Isso é necessário para falar com a API do Google OAuth para login externo.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -132,17 +143,19 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: auth-postgres
+              app.kubernetes.io/name: auth-postgres # Só permite falar com o SEU banco de dados próprio.
       ports:
         - protocol: TCP
           port: 5432
     - to:
         - ipBlock:
-            cidr: 0.0.0.0/0
+            cidr: 0.0.0.0/0 # Libera saída para a internet (Google OAuth).
       ports:
         - protocol: TCP
           port: 443
 ---
+# 6. PROFILE TRAFFIC: Permite tráfego para o microsserviço de Perfil.
+# Ele precisa ler o banco do profile, verificar sessões no auth e salvar avatares no MinIO.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -192,6 +205,8 @@ spec:
         - protocol: TCP
           port: 9000
 ---
+# 7. GAME TRAFFIC: Permite tráfego do microsserviço de Jogo.
+# O game se comunica com o banco de dados próprio, valida dados no profile e publica eventos no NATS.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -238,6 +253,8 @@ spec:
         - protocol: TCP
           port: 4222
 ---
+# 8. BANCO DE DADOS AUTH (Isolação): Somente o pod "auth" pode conectar no banco "auth-postgres".
+# Nenhum outro pod do cluster consegue sequer pingar essa porta.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -261,6 +278,8 @@ spec:
         - protocol: TCP
           port: 5432
 ---
+# 9. BANCO DE DADOS PROFILE (Isolação): Permite conexões do microsserviço profile
+# e do Job de inicialização de tabelas (profile-db-init).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -288,6 +307,7 @@ spec:
         - protocol: TCP
           port: 5432
 ---
+# 10. BANCO DE DADOS GAME (Isolação): Apenas o pod "game" pode se conectar.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -311,6 +331,7 @@ spec:
         - protocol: TCP
           port: 5432
 ---
+# 11. MINIO TRAFFIC: Permite tráfego para o MinIO de objetos a partir do frontend, profile e do job de inicialização (minio-init).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -339,6 +360,7 @@ spec:
         - protocol: TCP
           port: 9000
 ---
+# 12. NATS TRAFFIC: Apenas o microsserviço de Jogo (game) envia ou recebe eventos do NATS.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -362,6 +384,7 @@ spec:
         - protocol: TCP
           port: 4222
 ---
+# 13. DB INIT EGRESS: Permite que o Job de migração de banco acesse o banco de dados do profile.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -385,6 +408,7 @@ spec:
         - protocol: TCP
           port: 5432
 ---
+# 14. MINIO INIT EGRESS: Permite que o Job de criação de buckets acesse o MinIO.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

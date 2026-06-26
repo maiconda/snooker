@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/component: backend
     app.kubernetes.io/part-of: snooker
 spec:
-  type: ClusterIP
+  type: ClusterIP # Fica disponível somente internamente no cluster. Roteamento via Ingress.
   selector:
     app.kubernetes.io/name: auth
   ports:
@@ -29,10 +29,10 @@ spec:
   replicas: 1
   revisionHistoryLimit: 3
   strategy:
-    type: RollingUpdate
+    type: RollingUpdate # DICA DE APRESENTAÇÃO: RollingUpdate atualiza os pods de forma incremental.
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      maxSurge: 1 # Permite subir temporariamente 1 pod extra durante o deploy.
+      maxUnavailable: 0 # Garante que nenhum pod fique indisponível, alcançando zero downtime real!
   selector:
     matchLabels:
       app.kubernetes.io/name: auth
@@ -47,11 +47,15 @@ spec:
       serviceAccountName: snooker-app
       containers:
         - name: auth
+          # Imagem customizada da nossa aplicação em Go.
           image: maiconda/snooker-auth:v1.0.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
+          # Injeção de variáveis de ambiente.
+          # Observe como separamos as variáveis normais (ConfigMaps)
+          # dos segredos sensíveis como senhas e chaves JWT (Secrets).
           env:
             - name: PORT
               value: "8080"
@@ -131,6 +135,9 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
+          # O securityContext impede que o processo do container
+          # ganhe privilégios adicionais e remove todas as capabilities padrão do Kernel Linux
+          # que não são necessárias para rodar um servidor HTTP básico.
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

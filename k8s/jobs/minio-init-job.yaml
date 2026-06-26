@@ -23,6 +23,8 @@ spec:
       serviceAccountName: snooker-job
       containers:
         - name: minio-init
+          # Usamos a imagem oficial do MinIO Client (mc), que é a ferramenta
+          # de linha de comando para gerenciar instâncias de storage S3 de forma automatizada.
           image: minio/mc:RELEASE.2024-06-05T18-13-30Z
           imagePullPolicy: IfNotPresent
           command:
@@ -30,10 +32,13 @@ spec:
             - -c
           args:
             - |
+              # 1. Espera o MinIO principal iniciar e configura as credenciais locais no cliente.
               until mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
                 sleep 2
               done
+              # 2. Cria o bucket definido no ConfigMap (ex: 'snooker-profiles'). O '-p' previne erros se já existir.
               mc mb -p "local/$STORAGE_BUCKET_NAME" || true
+              # 3. Libera permissão pública de download (somente download) para que o navegador consiga ler as fotos de perfil direto por URL.
               mc anonymous set download "local/$STORAGE_BUCKET_NAME"
           env:
             - name: MINIO_ROOT_USER

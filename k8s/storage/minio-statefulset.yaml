@@ -8,13 +8,15 @@ metadata:
     app.kubernetes.io/component: object-storage
     app.kubernetes.io/part-of: snooker
 spec:
-  clusterIP: None
+  clusterIP: None # Headless Service.
   selector:
     app.kubernetes.io/name: minio
   ports:
+    # Porta 9000 é a API S3 principal (usada pelo microsserviço profile e pelo front para ler imagens).
     - name: api
       port: 9000
       targetPort: api
+    # Porta 9001 é o Console Web administrativo (painel visual do MinIO).
     - name: console
       port: 9001
       targetPort: console
@@ -43,7 +45,7 @@ spec:
         app.kubernetes.io/component: object-storage
         app.kubernetes.io/part-of: snooker
     spec:
-      serviceAccountName: snooker-data
+      serviceAccountName: snooker-data # Roda sob a identidade restrita de dados.
       containers:
         - name: minio
           image: minio/minio:RELEASE.2024-06-06T09-36-42Z
@@ -52,7 +54,7 @@ spec:
             - server
             - /data
             - --console-address
-            - :9001
+            - :9001 # Define em qual porta o Console Web vai escutar.
           ports:
             - name: api
               containerPort: 9000
@@ -69,6 +71,8 @@ spec:
                 secretKeyRef:
                   name: snooker-secrets
                   key: MINIO_ROOT_PASSWORD
+            # Configuramos CORS para permitir que o navegador do usuário
+            # consiga renderizar ou enviar imagens diretamente, sem bloqueios de segurança do browser.
             - name: MINIO_API_CORS_ALLOW_ORIGIN
               valueFrom:
                 configMapKeyRef:
@@ -81,6 +85,8 @@ spec:
             limits:
               cpu: 1000m
               memory: 1Gi
+          # O MinIO expõe rotas HTTP prontas de diagnóstico de saúde.
+          # Usamos 'httpGet' na porta da API REST para validar a saúde do serviço.
           readinessProbe:
             httpGet:
               path: /minio/health/ready
@@ -97,7 +103,7 @@ spec:
             timeoutSeconds: 5
           volumeMounts:
             - name: data
-              mountPath: /data
+              mountPath: /data # Ponto de montagem onde os objetos (buckets e arquivos) ficam salvos no container.
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -107,7 +113,7 @@ spec:
       spec:
         accessModes:
           - ReadWriteOnce
-        storageClassName: local-path
+        storageClassName: local-path # Persistent Volume Claim dinâmico com local-path do K3s.
         resources:
           requests:
-            storage: 5Gi
+            storage: 5Gi # Espaço reservado para armazenamento de imagens de perfil.

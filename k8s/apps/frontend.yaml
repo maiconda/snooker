@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/component: frontend
     app.kubernetes.io/part-of: snooker
 spec:
-  type: ClusterIP
+  type: ClusterIP # Somente acessível internamente. O tráfego externo bate no Ingress e vem para cá.
   selector:
     app.kubernetes.io/name: frontend
   ports:
@@ -59,6 +59,8 @@ spec:
             limits:
               cpu: 300m
               memory: 256Mi
+          # Como é um frontend estático, as probes validam a saúde
+          # fazendo uma requisição HTTP simples na raiz ("/"). Se retornar status 200, está saudável.
           readinessProbe:
             httpGet:
               path: /

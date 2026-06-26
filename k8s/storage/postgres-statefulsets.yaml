@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/component: database
     app.kubernetes.io/part-of: snooker
 spec:
-  clusterIP: None
+  clusterIP: None # Torna o serviço Headless.
   selector:
     app.kubernetes.io/name: auth-postgres
   ports:
@@ -16,6 +16,7 @@ spec:
       port: 5432
       targetPort: postgres
 ---
+# statefulSet do PostgreSQL do Auth
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -40,7 +41,7 @@ spec:
         app.kubernetes.io/component: database
         app.kubernetes.io/part-of: snooker
     spec:
-      serviceAccountName: snooker-data
+      serviceAccountName: snooker-data # Utiliza a ServiceAccount restrita de dados.
       containers:
         - name: postgres
           image: postgres:15-alpine
@@ -49,16 +50,19 @@ spec:
             - name: postgres
               containerPort: 5432
           env:
+            # Puxa o nome do banco do ConfigMap genérico
             - name: POSTGRES_DB
               valueFrom:
                 configMapKeyRef:
                   name: snooker-config
                   key: AUTH_DB_NAME
+            # Puxa o usuário do banco do ConfigMap genérico
             - name: POSTGRES_USER
               valueFrom:
                 configMapKeyRef:
                   name: snooker-config
                   key: AUTH_DB_USER
+            # Puxa a senha (dado sensível) diretamente da Secret
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -102,12 +106,15 @@ spec:
           app.kubernetes.io/part-of: snooker
       spec:
         accessModes:
-          - ReadWriteOnce
-        storageClassName: local-path
+          - ReadWriteOnce # O volume só pode ser montado para leitura/escrita por um único nó por vez.
+        storageClassName: local-path # StorageClass do K3s que salva os dados no disco local da máquina física.
         resources:
           requests:
             storage: 1Gi
----
+
+
+# StatefulSet do PostgreSQL do profile
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -216,8 +223,10 @@ spec:
         storageClassName: local-path
         resources:
           requests:
-            storage: 2Gi
+            storage: 2Gi # Espaço um pouco maior para dados de perfil (avatares, estatísticas etc.)
 ---
+# StatefulSet do PostgreSQL do game
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -326,4 +335,4 @@ spec:
         storageClassName: local-path
         resources:
           requests:
-            storage: 2Gi
+            storage: 2Gi # Espaço para dados de histórico de partidas de sinuca.
