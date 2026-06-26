@@ -96,3 +96,6 @@ spec:
           port: 4466
   egress:
     - {}
+
+# comando util para recuperar token headlamp
+# kubectl -n snooker get secret headlamp-admin-token -o jsonpath='{.data.token}' | base64 --decode
