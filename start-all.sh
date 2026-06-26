@@ -11,6 +11,13 @@ echo "========================================================"
 # Aplica em ordem de dependência
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/serviceaccounts.yaml
+
+# Garante a instalação do Headlamp via Helm antes de aplicar suas configurações adicionais (Ingress, RBAC)
+echo "Instalando/Atualizando Headlamp via Helm..."
+helm repo add headlamp https://kubernetes-sigs.github.io/headlamp/ --force-update || true
+helm repo update
+helm upgrade --install headlamp headlamp/headlamp --namespace snooker --set service.port=80
+
 kubectl apply -f k8s/headlamp.yaml
 kubectl apply -f k8s/configmap.yaml
 kubectl apply -f k8s/secret.yaml

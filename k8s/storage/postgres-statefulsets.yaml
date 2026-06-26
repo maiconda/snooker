@@ -111,8 +111,7 @@ spec:
         resources:
           requests:
             storage: 1Gi
-
-
+---
 # StatefulSet do PostgreSQL do profile
 
 apiVersion: v1

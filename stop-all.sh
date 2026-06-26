@@ -21,6 +21,11 @@ kubectl delete -f k8s/secret.yaml --ignore-not-found=true
 kubectl delete -f k8s/configmap.yaml --ignore-not-found=true
 kubectl delete -f k8s/headlamp.yaml --ignore-not-found=true
 kubectl delete -f k8s/serviceaccounts.yaml --ignore-not-found=true
+
+# Desinstala o Headlamp via Helm para limpar o estado antes de apagar o namespace
+echo "Desinstalando o Headlamp via Helm..."
+helm uninstall headlamp --namespace snooker || true
+
 kubectl delete -f k8s/namespace.yaml --ignore-not-found=true
 
 echo "========================================================"
